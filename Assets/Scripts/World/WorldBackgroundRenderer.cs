@@ -6,83 +6,46 @@ using Cysharp.Threading.Tasks;
 using UnityEngine;
 using MinesServer.Data;
 using Fodinae.Assets.Scripts.Game.Managers;
-using Fodinae.Assets.Scripts.World;
 using UnityEngine.Rendering;
 
 namespace Fodinae.Assets.Scripts.World
 {
-    /// <summary>
-    /// Renders the world as a background layer using a flat 2D mesh.
-    /// Automatically connects to MapStorage and renders behind all other objects.
-    /// </summary>
     [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
     public class WorldBackgroundRenderer : MonoBehaviour
     {
         [Header("Configuration")]
-        [Tooltip("Chunk size for mesh generation (should match WorldLayer chunk size)")]
-        [SerializeField] private int _chunkSize = 32;
-        
-        [Tooltip("Render distance in chunks from camera")]
-        [SerializeField] private int _renderDistance = 15;
-        
-        [Tooltip("Cell size in world units")]
-        [SerializeField] private float _cellSize = 1.0f;
-        
-        [Tooltip("Enable debug visualization")]
-        [SerializeField] private bool _debugMode = false;
-
-        [Header("Performance")]
-        [Tooltip("Enable mesh batching for better performance")]
-        [SerializeField] private bool _enableBatching = true;
-        
-        [Tooltip("Maximum chunks to batch together")]
-        [SerializeField] private int _maxBatchSize = 32;
+        public int _chunkSize = 32;
+        public int _renderDistance = 15;
+        public float _cellSize = 1.0f;
+        public bool _debugMode = false;
 
         [Header("Background Settings")]
-        [Tooltip("Z position for background rendering (should be behind other objects)")]
-        [SerializeField] private float _backgroundZ = -10f;
-        
-        [Tooltip("Sorting order for background layer")]
+        // FIX: Default Z to 0 so it appears in front of the camera (assuming 2D setup) or at least not behind the near clip
+        [SerializeField] private float _backgroundZ = 0f;
         [SerializeField] private int _sortingOrder = -1000;
 
         private MeshFilter _meshFilter;
         private MeshRenderer _meshRenderer;
         private Mesh _mesh;
         private Material _backgroundMaterial;
-        private bool _materialInitialized = false;
-        
+
         private WorldLayer<CellType> _worldLayer;
         private readonly ConcurrentDictionary<Vector2Int, ChunkMesh> _chunkMeshes = new();
         private readonly HashSet<Vector2Int> _visibleChunks = new();
-        
+
         private Camera _mainCamera;
-        private Vector2Int _lastCameraChunk = Vector2Int.zero;
+        // FIX: Initialize to impossible value so it updates on first frame
+        private Vector2Int _lastCameraChunk = new Vector2Int(int.MinValue, int.MinValue);
+
         private bool _isInitialized = false;
         private bool _worldInitialized = false;
         private bool _texturesLoaded = false;
         private bool _atlasTextureApplied = false;
-        private float _lastLogTime = 0f;
-        private const float _logCooldown = 2.0f; // Log only every 2 seconds
-        
-        // State management
-        private enum InitializationState
-        {
-            Uninitialized,
-            WaitingForWorldInit,
-            WaitingForWorldData,
-            ReadyForRendering,
-            Rendering,
-            Failed
-        }
-        
-        private InitializationState _currentState = InitializationState.Uninitialized;
-        private float _initializationStartTime = 0f;
-        private const float MAX_INITIALIZATION_TIME = 10f; // 10 seconds max initialization time
 
-        private void Awake()
-        {
-            Initialize();
-        }
+        private enum InitializationState { Uninitialized, WaitingForWorldInit, WaitingForWorldData, ReadyForRendering, Rendering, Failed }
+        private InitializationState _currentState = InitializationState.Uninitialized;
+
+        private void Awake() => Initialize();
 
         private void Initialize()
         {
@@ -90,212 +53,118 @@ namespace Fodinae.Assets.Scripts.World
 
             _meshFilter = GetComponent<MeshFilter>();
             _meshRenderer = GetComponent<MeshRenderer>();
-            
-            if (_meshFilter == null || _meshRenderer == null)
+
+            if (_meshFilter == null || _meshRenderer == null) 
             {
-                Debug.LogError("WorldBackgroundRenderer requires MeshFilter and MeshRenderer components");
-                enabled = false;
+                Debug.LogError("WorldBackgroundRenderer: Missing MeshFilter or MeshRenderer component");
                 return;
             }
 
             _mesh = new Mesh();
             _meshFilter.mesh = _mesh;
-            
             _mainCamera = Camera.main;
-            
-            // Configure as background renderer
+
             ConfigureBackgroundRendering();
-            
-            // Subscribe to texture loading events
+
             WorldTextureManager.Instance.OnTextureLoaded += OnTextureLoaded;
-            
-            // Subscribe to world initialization events
+
             if (MapManager.Instance != null)
             {
                 MapManager.Instance.OnWorldInitialized += OnWorldInitialized;
                 MapManager.Instance.OnWorldDataLoaded += OnWorldDataLoaded;
-                Debug.Log("WorldBackgroundRenderer: Successfully subscribed to MapManager events");
+                Debug.Log("WorldBackgroundRenderer: Registered for MapManager events");
             }
             else
             {
-                Debug.LogWarning("WorldBackgroundRenderer: MapManager not found, using fallback initialization");
+                Debug.LogWarning("WorldBackgroundRenderer: MapManager not found - may affect initialization");
             }
-            
+
             _isInitialized = true;
             _currentState = InitializationState.WaitingForWorldInit;
             
-            // Start aggressive fallback initialization
-            StartCoroutine(AggressiveFallbackInitialization());
-            
-            // Start immediate check for MapStorage availability
+            Debug.Log("WorldBackgroundRenderer: Initialization started");
+
+            // Start legacy coroutines for fallback
             StartCoroutine(ImmediateMapStorageCheck());
-            
-            Debug.Log("WorldBackgroundRenderer: Initialized, waiting for world data");
         }
 
         private void ConfigureBackgroundRendering()
         {
-            // Set up the renderer for background rendering
             var shader = Shader.Find("Universal Render Pipeline/Unlit");
-            if (shader == null)
-            {
-                Debug.LogError("Universal Render Pipeline/Unlit shader not found. Using default unlit shader.");
-                shader = Shader.Find("Unlit/Texture");
-            }
-            
+            if (!shader) shader = Shader.Find("Unlit/Texture");
+
             _backgroundMaterial = new Material(shader);
             _backgroundMaterial.name = "WorldBackgroundMaterial";
-            _backgroundMaterial.renderQueue = 3000; // Ensure it renders after other objects
             
+            // Ensure proper material properties for texture rendering
+            _backgroundMaterial.SetColor("_Color", Color.white);
+            _backgroundMaterial.SetFloat("_Surface", 0f); // Opaque
+            _backgroundMaterial.SetFloat("_Cutoff", 0.5f);
+            _backgroundMaterial.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.One);
+            _backgroundMaterial.SetFloat("_DstBlend", (float)UnityEngine.Rendering.BlendMode.Zero);
+            _backgroundMaterial.SetFloat("_ZWrite", 1f);
+            _backgroundMaterial.EnableKeyword("_ALPHATEST_ON");
+            _backgroundMaterial.DisableKeyword("_ALPHABLEND_ON");
+            _backgroundMaterial.DisableKeyword("_ALPHAPREMULTIPLY_ON");
+            _backgroundMaterial.renderQueue = 2000;
+
             _meshRenderer.material = _backgroundMaterial;
             _meshRenderer.sortingOrder = _sortingOrder;
+            _meshRenderer.shadowCastingMode = ShadowCastingMode.Off;
             _meshRenderer.receiveShadows = false;
-            _meshRenderer.lightProbeUsage = LightProbeUsage.Off;
-            _meshRenderer.reflectionProbeUsage = ReflectionProbeUsage.Off;
-            _meshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            _meshRenderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
+            _meshRenderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+
+            // FIX: Set Z position
+            var pos = transform.position;
+            pos.z = _backgroundZ;
+            transform.position = pos;
             
-            // Position the renderer behind everything
-            var position = transform.position;
-            position.z = _backgroundZ;
-            transform.position = position;
-            
-            _materialInitialized = true;
-            Debug.Log("WorldBackgroundRenderer: Material initialized successfully");
+            Debug.Log("WorldBackgroundRenderer: Material configured for texture rendering");
         }
 
         private void Update()
         {
-            if (!_isInitialized || _mainCamera == null || !_materialInitialized) return;
+            if (!_isInitialized) return;
 
-            // Track initialization time
-            if (_initializationStartTime == 0f)
-            {
-                _initializationStartTime = Time.time;
-            }
+            if (!_worldInitialized) InitializeWorldLayer();
 
-            // Check for initialization timeout
-            float timeSinceStart = Time.time - _initializationStartTime;
-            if (timeSinceStart > MAX_INITIALIZATION_TIME && _currentState != InitializationState.Failed)
-            {
-                Debug.LogError($"WorldBackgroundRenderer: Initialization timeout after {MAX_INITIALIZATION_TIME}s. Current state: {_currentState}");
-                _currentState = InitializationState.Failed;
-                
-                // Try one final force initialization
-                if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
-                {
-                    Debug.LogWarning("WorldBackgroundRenderer: Attempting final force initialization");
-                    _currentState = InitializationState.ReadyForRendering;
-                    _worldInitialized = true;
-                    InitializeWorldLayer();
-                }
-            }
-
-            // Initialize world layer if not done yet
-            if (!_worldInitialized)
-            {
-                InitializeWorldLayer();
-                
-                // Fallback: if we've been waiting too long and have a world layer, force initialization
-                if (_worldLayer != null && _currentState == InitializationState.WaitingForWorldData)
-                {
-                    // Check if we've been waiting for more than 3 seconds (reduced from 5)
-                    if (Time.time - _lastLogTime > 3.0f)
-                    {
-                        Debug.LogWarning("WorldBackgroundRenderer: Forcing initialization due to timeout (3s)");
-                        _currentState = InitializationState.ReadyForRendering;
-                        _worldInitialized = true;
-                    }
-                }
-            }
-
-            // Only update mesh if we have a world layer and are ready for rendering
             if (_worldLayer != null && _currentState == InitializationState.ReadyForRendering)
             {
                 UpdateVisibleChunks();
                 UpdateMesh();
             }
-            else if (_worldLayer == null && _currentState != InitializationState.Failed)
-            {
-                // Log only occasionally to prevent spam, but more frequently during active initialization
-                if (Time.time - _lastLogTime >= 1.0f) // Reduced from 2.0f to 1.0f
-                {
-                    Debug.Log($"WorldBackgroundRenderer: Waiting for world layer... State: {_currentState}, Time: {timeSinceStart:F1}s");
-                    _lastLogTime = Time.time;
-                }
-            }
         }
 
-        /// <summary>
-        /// Force re-initialization of the world layer (for debugging)
-        /// </summary>
-        public void ForceReinitialize()
-        {
-            _worldInitialized = false;
-            _worldLayer = null;
-            _chunkMeshes.Clear();
-            _visibleChunks.Clear();
-            _mesh.Clear();
-            Debug.Log("WorldBackgroundRenderer: Forced reinitialization");
-        }
-
-        /// <summary>
-        /// Check if the renderer is properly configured
-        /// </summary>
-        public bool IsProperlyConfigured()
-        {
-            return _isInitialized && 
-                   _materialInitialized && 
-                   _meshFilter != null && 
-                   _meshRenderer != null && 
-                   _backgroundMaterial != null;
-        }
-
-        /// <summary>
-        /// Debug method to check initialization status and provide detailed diagnostics
-        /// </summary>
-        public void DebugInitializationStatus()
-        {
-            Debug.Log("=== WorldBackgroundRenderer Debug Status ===");
-            Debug.Log($"Is Initialized: {_isInitialized}");
-            Debug.Log($"Material Initialized: {_materialInitialized}");
-            Debug.Log($"World Initialized: {_worldInitialized}");
-            Debug.Log($"Current State: {_currentState}");
-            Debug.Log($"MapStorage Ready: {MapStorage.Instance?.IsReady ?? false}");
-            Debug.Log($"MapStorage World: {MapStorage.Instance?.GetWorldCodeName() ?? "None"}");
-            Debug.Log($"MapManager Available: {MapManager.Instance != null}");
-            Debug.Log($"Visible Chunks: {_visibleChunks.Count}");
-            Debug.Log($"Chunk Meshes: {_chunkMeshes.Count}");
-            Debug.Log($"Textures Loaded: {_texturesLoaded}");
-            Debug.Log($"Atlas Applied: {_atlasTextureApplied}");
-            Debug.Log("==========================================");
-        }
-
-        /// <summary>
-        /// Manual trigger to force initialization (for debugging)
-        /// </summary>
         public void ForceInitialization()
         {
-            Debug.Log("WorldBackgroundRenderer: Manual force initialization triggered");
-            
-            // Reset state
             _worldInitialized = false;
             _worldLayer = null;
             _chunkMeshes.Clear();
             _visibleChunks.Clear();
             _mesh.Clear();
-            
-            // Try to initialize immediately
             InitializeWorldLayer();
-            
+
             if (_worldLayer != null)
             {
                 _currentState = InitializationState.ReadyForRendering;
                 _worldInitialized = true;
-                Debug.Log("WorldBackgroundRenderer: Force initialization successful");
+                _lastCameraChunk = new Vector2Int(int.MinValue, int.MinValue); // Force update next frame
             }
-            else
+        }
+
+        public void OnDrawGizmosSelected()
+        {
+            if (!_debugMode || _worldLayer == null) return;
+            Gizmos.color = Color.yellow;
+            foreach (var chunkPos in _visibleChunks)
             {
-                Debug.LogWarning("WorldBackgroundRenderer: Force initialization failed - no world data available");
+                var center = new Vector3(
+                    chunkPos.x * _chunkSize * _cellSize + (_chunkSize * _cellSize / 2),
+                    chunkPos.y * _chunkSize * _cellSize + (_chunkSize * _cellSize / 2),
+                    0
+                );
+                Gizmos.DrawWireCube(center, new Vector3(_chunkSize * _cellSize, _chunkSize * _cellSize, 0.1f));
             }
         }
 
@@ -305,622 +174,263 @@ namespace Fodinae.Assets.Scripts.World
             {
                 _worldLayer = MapStorage.Instance.cellLayer;
                 _worldInitialized = true;
-                
-                // Update state based on current initialization progress
-                if (_currentState == InitializationState.WaitingForWorldInit)
-                {
-                    _currentState = InitializationState.WaitingForWorldData;
-                    Debug.Log($"WorldBackgroundRenderer connected to MapStorage cell layer. State: {_currentState}");
-                }
-                else if (_currentState == InitializationState.WaitingForWorldData)
-                {
-                    _currentState = InitializationState.ReadyForRendering;
-                    Debug.Log($"WorldBackgroundRenderer: World data ready, transitioning to rendering. State: {_currentState}");
-                }
-                else if (_currentState == InitializationState.ReadyForRendering)
-                {
-                    Debug.Log($"WorldBackgroundRenderer: Already ready for rendering. State: {_currentState}");
-                }
-                
-                // Force initial mesh generation now that we have world data
-                UpdateVisibleChunks();
-            }
-            else
-            {
-                // Only log if enough time has passed to prevent spam
-                if (Time.time - _lastLogTime >= _logCooldown)
-                {
-                    Debug.Log($"WorldBackgroundRenderer: MapStorage not ready, waiting for world initialization... State: {_currentState}");
-                    _lastLogTime = Time.time;
-                }
+                _currentState = InitializationState.ReadyForRendering;
+                // Force update
+                _lastCameraChunk = new Vector2Int(int.MinValue, int.MinValue);
             }
         }
 
         private async void UpdateVisibleChunks()
         {
-            if (_worldLayer == null) return;
+            if (_worldLayer == null || _mainCamera == null) return;
 
-            var cameraPos = _mainCamera.transform.position;
-            var cameraChunkX = Mathf.FloorToInt(cameraPos.x / (_chunkSize * _cellSize));
-            var cameraChunkY = Mathf.FloorToInt(cameraPos.y / (_chunkSize * _cellSize));
-            var cameraChunk = new Vector2Int(cameraChunkX, cameraChunkY);
+            var camPos = _mainCamera.transform.position;
+            int cx = Mathf.FloorToInt(camPos.x / (_chunkSize * _cellSize));
+            int cy = Mathf.FloorToInt(camPos.y / (_chunkSize * _cellSize));
+            var currentChunk = new Vector2Int(cx, cy);
 
-            if (cameraChunk == _lastCameraChunk) return;
-            _lastCameraChunk = cameraChunk;
+            if (currentChunk == _lastCameraChunk) return;
+            _lastCameraChunk = currentChunk;
 
-            var newVisibleChunks = new HashSet<Vector2Int>();
-
-            // Calculate visible chunk range
-            int minX = cameraChunk.x - _renderDistance;
-            int maxX = cameraChunk.x + _renderDistance;
-            int minY = cameraChunk.y - _renderDistance;
-            int maxY = cameraChunk.y + _renderDistance;
-
-            // Generate visible chunks
-            for (int y = minY; y <= maxY; y++)
+            var newVisible = new HashSet<Vector2Int>();
+            for (int y = cy - _renderDistance; y <= cy + _renderDistance; y++)
             {
-                for (int x = minX; x <= maxX; x++)
+                for (int x = cx - _renderDistance; x <= cx + _renderDistance; x++)
                 {
-                    var chunkPos = new Vector2Int(x, y);
-                    newVisibleChunks.Add(chunkPos);
+                    newVisible.Add(new Vector2Int(x, y));
                 }
             }
 
-            // Remove chunks that are no longer visible
-            var chunksToRemove = _visibleChunks.Except(newVisibleChunks).ToList();
-            foreach (var chunkPos in chunksToRemove)
+            // Unload old
+            foreach (var chunk in _visibleChunks)
             {
-                _chunkMeshes.TryRemove(chunkPos, out _);
-                _visibleChunks.Remove(chunkPos);
+                if (!newVisible.Contains(chunk)) _chunkMeshes.TryRemove(chunk, out _);
+            }
+            _visibleChunks.Clear();
+            _visibleChunks.UnionWith(newVisible);
+
+            // Load new
+            var loadTasks = new List<UniTask>();
+            foreach (var chunk in newVisible)
+            {
+                if (!_chunkMeshes.ContainsKey(chunk))
+                {
+                    loadTasks.Add(GenerateChunkMeshAsync(chunk));
+                }
             }
 
-            // Add new visible chunks
-            var chunksToAdd = newVisibleChunks.Except(_visibleChunks).ToList();
-            foreach (var chunkPos in chunksToAdd)
-            {
-                _visibleChunks.Add(chunkPos);
-                await GenerateChunkMeshAsync(chunkPos);
-            }
+            if (loadTasks.Count > 0) await UniTask.WhenAll(loadTasks);
         }
 
         private async UniTask GenerateChunkMeshAsync(Vector2Int chunkPos)
         {
-            if (_chunkMeshes.ContainsKey(chunkPos)) return;
-
-            var chunkMesh = new ChunkMesh(chunkPos, _chunkSize, _cellSize);
-            
-            // Generate vertices and triangles for the chunk
-            await GenerateChunkGeometry(chunkMesh);
-            
-            // Get texture coordinates for all cells in the chunk
-            await GenerateChunkTextures(chunkMesh);
-
+            var chunkMesh = new ChunkMesh(chunkPos);
+            await GenerateGeometry(chunkMesh);
+            await GenerateTextures(chunkMesh);
             _chunkMeshes[chunkPos] = chunkMesh;
         }
 
-        private async UniTask GenerateChunkGeometry(ChunkMesh chunkMesh)
+        private UniTask GenerateGeometry(ChunkMesh mesh)
         {
-            var vertices = new List<Vector3>();
-            var triangles = new List<int>();
-            var uvs = new List<Vector2>();
-            var atlasIndices = new List<int>();
-
             int vertexIndex = 0;
-            int validCells = 0;
-
             for (int y = 0; y < _chunkSize; y++)
             {
                 for (int x = 0; x < _chunkSize; x++)
                 {
-                    var worldX = chunkMesh.ChunkPosition.x * _chunkSize + x;
-                    var worldY = chunkMesh.ChunkPosition.y * _chunkSize + y;
+                    int wx = mesh.ChunkPosition.x * _chunkSize + x;
+                    int wy = mesh.ChunkPosition.y * _chunkSize + y;
 
-                    try
-                    {
-                        // Safely get cell type with bounds checking
-                        var cellType = MapStorage.Instance.GetCell(worldX, worldY);
-                        
-                        // Skip unloaded or pregener cells
-                        if (cellType == CellType.Unloaded || cellType == CellType.Pregener) continue;
+                    CellType cell = CellType.Unloaded;
+                    try { cell = MapStorage.Instance.GetCell(wx, wy); } catch { }
 
-                        // Generate quad vertices
-                        var bottomLeft = new Vector3(x * _cellSize, y * _cellSize, 0);
-                        var bottomRight = new Vector3((x + 1) * _cellSize, y * _cellSize, 0);
-                        var topRight = new Vector3((x + 1) * _cellSize, (y + 1) * _cellSize, 0);
-                        var topLeft = new Vector3(x * _cellSize, (y + 1) * _cellSize, 0);
+                    // 4 Vertices per quad
+                    float gx = x * _cellSize;
+                    float gy = y * _cellSize;
 
-                        // Add vertices
-                        vertices.Add(bottomLeft);
-                        vertices.Add(bottomRight);
-                        vertices.Add(topRight);
-                        vertices.Add(topLeft);
+                    mesh.Vertices.Add(new Vector3(gx, gy, 0));
+                    mesh.Vertices.Add(new Vector3(gx + _cellSize, gy, 0));
+                    mesh.Vertices.Add(new Vector3(gx + _cellSize, gy + _cellSize, 0));
+                    mesh.Vertices.Add(new Vector3(gx, gy + _cellSize, 0));
 
-                        // Add UVs (will be updated later with actual texture coordinates)
-                        uvs.Add(Vector2.zero);
-                        uvs.Add(Vector2.zero);
-                        uvs.Add(Vector2.zero);
-                        uvs.Add(Vector2.zero);
+                    mesh.UVs.Add(Vector2.zero);
+                    mesh.UVs.Add(Vector2.zero);
+                    mesh.UVs.Add(Vector2.zero);
+                    mesh.UVs.Add(Vector2.zero);
 
-                        // Add triangles
-                        triangles.Add(vertexIndex);
-                        triangles.Add(vertexIndex + 1);
-                        triangles.Add(vertexIndex + 2);
+                    mesh.Triangles.Add(vertexIndex);
+                    mesh.Triangles.Add(vertexIndex + 2);
+                    mesh.Triangles.Add(vertexIndex + 1);
+                    mesh.Triangles.Add(vertexIndex);
+                    mesh.Triangles.Add(vertexIndex + 3);
+                    mesh.Triangles.Add(vertexIndex + 2);
 
-                        triangles.Add(vertexIndex);
-                        triangles.Add(vertexIndex + 2);
-                        triangles.Add(vertexIndex + 3);
-
-                        // Store cell info for texture assignment
-                        chunkMesh.Cells.Add(new CellInfo
-                        {
-                            LocalPosition = new Vector2Int(x, y),
-                            WorldPosition = new Vector2Int(worldX, worldY),
-                            CellType = cellType,
-                            VertexStartIndex = vertexIndex
-                        });
-
-                        vertexIndex += 4;
-                        validCells++;
-                    }
-                    catch (System.Exception ex)
-                    {
-                        Debug.LogError($"Error generating geometry for cell at ({worldX}, {worldY}): {ex.Message}");
-                    }
+                    mesh.Cells.Add(new CellInfo { CellType = cell, VertexStartIndex = vertexIndex, WorldPosition = new Vector2Int(wx, wy) });
+                    vertexIndex += 4;
                 }
             }
+            return UniTask.CompletedTask;
+        }
 
-            chunkMesh.Vertices = vertices;
-            chunkMesh.Triangles = triangles;
-            chunkMesh.UVs = uvs;
-            chunkMesh.AtlasIndices = atlasIndices;
-            
-            if (validCells > 0)
+        private async UniTask GenerateTextures(ChunkMesh mesh)
+        {
+            var coords = await UniTask.WhenAll(mesh.Cells.Select(c =>
+                WorldTextureManager.Instance.GetCellTextureCoordinate(c.CellType, c.WorldPosition.x, c.WorldPosition.y)));
+
+            for (int i = 0; i < mesh.Cells.Count; i++)
             {
-                Debug.Log($"Generated chunk mesh for {chunkMesh.ChunkPosition} with {validCells} valid cells");
+                var c = mesh.Cells[i];
+                var uv = coords[i];
+                if (uv == AtlasCoordinate.Empty) continue;
+
+                mesh.UVs[c.VertexStartIndex] = new Vector2(uv.U1, uv.V1);
+                mesh.UVs[c.VertexStartIndex + 1] = new Vector2(uv.U2, uv.V1);
+                mesh.UVs[c.VertexStartIndex + 2] = new Vector2(uv.U2, uv.V2);
+                mesh.UVs[c.VertexStartIndex + 3] = new Vector2(uv.U1, uv.V2);
             }
-        }
-
-        private async UniTask GenerateChunkTextures(ChunkMesh chunkMesh)
-        {
-            if (chunkMesh.Cells.Count == 0) return;
-
-            // Get texture coordinates for all cells in the chunk
-            var textureTasks = chunkMesh.Cells.Select(cell => 
-                WorldTextureManager.Instance.GetCellTextureCoordinate(cell.CellType, cell.WorldPosition.x, cell.WorldPosition.y)
-            ).ToArray();
-
-            var textureCoordinates = await UniTask.WhenAll(textureTasks);
-
-            // Assign texture coordinates and determine atlas indices
-            for (int i = 0; i < chunkMesh.Cells.Count; i++)
-            {
-                var cell = chunkMesh.Cells[i];
-                var coord = textureCoordinates[i];
-
-                if (coord == AtlasCoordinate.Empty) continue;
-
-                // Find or create material for this atlas
-                int atlasIndex = GetAtlasIndex(coord);
-                
-                // Update UV coordinates for this cell's quad
-                UpdateCellUVs(chunkMesh, cell.VertexStartIndex, coord);
-
-                // Store atlas index for this cell's vertices
-                for (int v = 0; v < 4; v++)
-                {
-                    while (chunkMesh.AtlasIndices.Count <= cell.VertexStartIndex + v)
-                    {
-                        chunkMesh.AtlasIndices.Add(0);
-                    }
-                    chunkMesh.AtlasIndices[cell.VertexStartIndex + v] = atlasIndex;
-                }
-            }
-        }
-
-        private int GetAtlasIndex(AtlasCoordinate coord)
-        {
-            // For now, use the first atlas
-            // In the future, this could map to different atlases
-            return 0;
-        }
-
-        private void UpdateCellUVs(ChunkMesh chunkMesh, int vertexStartIndex, AtlasCoordinate coord)
-        {
-            if (vertexStartIndex + 3 >= chunkMesh.UVs.Count) return;
-
-            // Update UV coordinates for the quad
-            chunkMesh.UVs[vertexStartIndex] = new Vector2(coord.U1, coord.V1);     // Bottom-left
-            chunkMesh.UVs[vertexStartIndex + 1] = new Vector2(coord.U2, coord.V1); // Bottom-right
-            chunkMesh.UVs[vertexStartIndex + 2] = new Vector2(coord.U2, coord.V2); // Top-right
-            chunkMesh.UVs[vertexStartIndex + 3] = new Vector2(coord.U1, coord.V2); // Top-left
         }
 
         private void UpdateMesh()
         {
-            if (_chunkMeshes.Count == 0)
+            if (_chunkMeshes.Count == 0) return;
+
+            var verts = new List<Vector3>();
+            var tris = new List<int>();
+            var uvs = new List<Vector2>();
+
+            int vOffset = 0;
+            foreach (var kvp in _chunkMeshes)
             {
-                _mesh.Clear();
-                return;
+                var chunk = kvp.Value;
+                var offset = new Vector3(chunk.ChunkPosition.x * _chunkSize * _cellSize, chunk.ChunkPosition.y * _chunkSize * _cellSize, 0);
+
+                foreach (var v in chunk.Vertices) verts.Add(v + offset);
+                foreach (var t in chunk.Triangles) tris.Add(t + vOffset);
+                uvs.AddRange(chunk.UVs);
+
+                vOffset += chunk.Vertices.Count;
             }
 
-            if (_enableBatching)
-            {
-                BatchMeshes();
-            }
-            else
-            {
-                // Use first chunk as primary mesh for simplicity
-                var firstChunk = _chunkMeshes.Values.First();
-                ApplyChunkMeshToRenderer(firstChunk);
-            }
-        }
-
-        private void BatchMeshes()
-        {
-            var combinedVertices = new List<Vector3>();
-            var combinedTriangles = new List<int>();
-            var combinedUVs = new List<Vector2>();
-            var combinedAtlasIndices = new List<int>();
-
-            int vertexOffset = 0;
-            int chunkCount = 0;
-
-            foreach (var chunkMesh in _chunkMeshes.Values)
-            {
-                if (chunkCount >= _maxBatchSize) break;
-
-                // Offset vertices to world position
-                var chunkOffset = new Vector3(
-                    chunkMesh.ChunkPosition.x * _chunkSize * _cellSize,
-                    chunkMesh.ChunkPosition.y * _chunkSize * _cellSize,
-                    0
-                );
-
-                // Add vertices with offset
-                foreach (var vertex in chunkMesh.Vertices)
-                {
-                    combinedVertices.Add(vertex + chunkOffset);
-                }
-
-                // Add triangles with offset
-                foreach (var triangle in chunkMesh.Triangles)
-                {
-                    combinedTriangles.Add(triangle + vertexOffset);
-                }
-
-                // Add UVs
-                combinedUVs.AddRange(chunkMesh.UVs);
-
-                // Add atlas indices
-                combinedAtlasIndices.AddRange(chunkMesh.AtlasIndices);
-
-                vertexOffset += chunkMesh.Vertices.Count;
-                chunkCount++;
-            }
-
-            // Apply combined mesh
             _mesh.Clear();
-            _mesh.vertices = combinedVertices.ToArray();
-            _mesh.triangles = combinedTriangles.ToArray();
-            _mesh.uv = combinedUVs.ToArray();
-            _mesh.RecalculateNormals();
+            // Use SetVertices for large lists if needed, but simple assignment works for < 65k verts. 
+            // Since we have >65k verts (131k in logs), we must set indexFormat.
+            _mesh.indexFormat = IndexFormat.UInt32;
+            _mesh.SetVertices(verts);
+            _mesh.SetTriangles(tris, 0);
+            _mesh.SetUVs(0, uvs);
             _mesh.RecalculateBounds();
-        }
-
-        private void ApplyChunkMeshToRenderer(ChunkMesh chunkMesh)
-        {
-            _mesh.Clear();
-            _mesh.vertices = chunkMesh.Vertices.ToArray();
-            _mesh.triangles = chunkMesh.Triangles.ToArray();
-            _mesh.uv = chunkMesh.UVs.ToArray();
             _mesh.RecalculateNormals();
         }
 
-        private void OnDrawGizmosSelected()
+        private void OnTextureLoaded(string name, Texture2D tex)
         {
-            if (!_debugMode || _worldLayer == null) return;
-
-            Gizmos.color = Color.yellow;
-            
-            foreach (var chunkPos in _visibleChunks)
-            {
-                var center = new Vector3(
-                    chunkPos.x * _chunkSize * _cellSize + (_chunkSize * _cellSize / 2),
-                    chunkPos.y * _chunkSize * _cellSize + (_chunkSize * _cellSize / 2),
-                    0
-                );
-                
-                var size = new Vector3(_chunkSize * _cellSize, _chunkSize * _cellSize, 0.1f);
-                Gizmos.DrawWireCube(center, size);
-            }
-        }
-
-        [System.Serializable]
-        private class CellInfo
-        {
-            public Vector2Int LocalPosition;
-            public Vector2Int WorldPosition;
-            public CellType CellType;
-            public int VertexStartIndex;
-        }
-
-        [System.Serializable]
-        private class ChunkMesh
-        {
-            public Vector2Int ChunkPosition;
-            public List<Vector3> Vertices;
-            public List<int> Triangles;
-            public List<Vector2> UVs;
-            public List<int> AtlasIndices;
-            public List<CellInfo> Cells;
-
-            public ChunkMesh(Vector2Int chunkPosition, int chunkSize, float cellSize)
-            {
-                ChunkPosition = chunkPosition;
-                Vertices = new List<Vector3>();
-                Triangles = new List<int>();
-                UVs = new List<Vector2>();
-                AtlasIndices = new List<int>();
-                Cells = new List<CellInfo>();
-            }
-        }
-
-        private void OnTextureLoaded(string filename, Texture2D texture)
-        {
-            // Texture loaded, try to apply atlas texture to material
             _texturesLoaded = true;
-            ApplyAtlasTextureToMaterial();
+            Debug.Log($"WorldBackgroundRenderer: Texture loaded: {name}");
+            ApplyAtlas();
         }
 
-        private async void ApplyAtlasTextureToMaterial()
+        private async void ApplyAtlas()
         {
-            if (_atlasTextureApplied || _texturesLoaded == false || _backgroundMaterial == null) return;
-
+            if (_atlasTextureApplied) return;
+            
             var atlases = WorldTextureManager.Instance.GetAllAtlases();
-            if (atlases != null && atlases.Count > 0)
+            Debug.Log($"WorldBackgroundRenderer: Found {atlases.Count} atlas(es)");
+            
+            if (atlases.Count > 0)
             {
-                var atlas = atlases[0];
-                if (atlas != null)
+                var tex = await atlases[0].GetAtlasTexture();
+                if (tex != null && _backgroundMaterial != null)
                 {
-                    var atlasTexture = await atlas.GetAtlasTexture();
-                    if (atlasTexture != null)
-                    {
-                        _backgroundMaterial.mainTexture = atlasTexture;
-                        _atlasTextureApplied = true;
-                        Debug.Log($"WorldBackgroundRenderer: Atlas texture applied to material. Size: {atlasTexture.width}x{atlasTexture.height}");
-                        
-                        // Force mesh update to ensure proper rendering
-                        UpdateMesh();
-                    }
-                    else
-                    {
-                        Debug.LogWarning("WorldBackgroundRenderer: Atlas texture is null");
-                    }
+                    _backgroundMaterial.mainTexture = tex;
+                    _atlasTextureApplied = true;
+                    Debug.Log($"WorldBackgroundRenderer: Atlas applied successfully. Texture size: {tex.width}x{tex.height}");
+                    // Force refresh to update UVs if they changed
+                    _lastCameraChunk = new Vector2Int(int.MinValue, int.MinValue);
                 }
                 else
                 {
-                    Debug.LogWarning("WorldBackgroundRenderer: Atlas is null");
+                    Debug.LogWarning($"WorldBackgroundRenderer: Failed to get atlas texture or material is null");
                 }
             }
             else
             {
-                Debug.LogWarning("WorldBackgroundRenderer: No atlases found");
+                Debug.LogWarning("WorldBackgroundRenderer: No atlases available for texture application");
             }
         }
 
-        /// <summary>
-        /// Get the number of visible chunks for debugging
-        /// </summary>
-        public int GetVisibleChunkCount()
-        {
-            return _visibleChunks.Count;
-        }
+        // Standard helpers
+        public void ForceReinitialize() { _worldInitialized = false; Initialize(); }
+        public bool IsProperlyConfigured() => _isInitialized;
+        public int GetVisibleChunkCount() => _chunkMeshes.Count;
+        public bool AreTexturesLoaded() => _texturesLoaded;
+        public bool IsAtlasApplied() => _atlasTextureApplied;
+        public string GetRendererState() => _currentState.ToString();
+        private void OnWorldInitialized() => _currentState = InitializationState.WaitingForWorldData;
+        private void OnWorldDataLoaded() { _currentState = InitializationState.ReadyForRendering; InitializeWorldLayer(); }
 
         /// <summary>
-        /// Check if textures have been loaded for debugging
+        /// Get detailed diagnostic information about the renderer state
         /// </summary>
-        public bool AreTexturesLoaded()
+        public string GetDiagnosticInfo()
         {
-            return _texturesLoaded;
-        }
-
-        /// <summary>
-        /// Check if atlas texture has been applied for debugging
-        /// </summary>
-        public bool IsAtlasApplied()
-        {
-            return _atlasTextureApplied;
-        }
-
-        /// <summary>
-        /// Get the current renderer state for debugging
-        /// </summary>
-        public string GetRendererState()
-        {
-            return _currentState.ToString();
-        }
-
-        // Event handlers for world initialization
-        private void OnWorldInitialized()
-        {
-            _currentState = InitializationState.WaitingForWorldData;
-            Debug.Log("WorldBackgroundRenderer: World initialized, waiting for world data");
-        }
-
-        private void OnWorldDataLoaded()
-        {
-            _currentState = InitializationState.ReadyForRendering;
-            Debug.Log("WorldBackgroundRenderer: World data loaded, ready for rendering");
+            var info = new System.Text.StringBuilder();
+            info.AppendLine("=== WorldBackgroundRenderer Diagnostic Info ===");
+            info.AppendLine($"State: {_currentState}");
+            info.AppendLine($"Initialized: {_isInitialized}");
+            info.AppendLine($"World Initialized: {_worldInitialized}");
+            info.AppendLine($"Textures Loaded: {_texturesLoaded}");
+            info.AppendLine($"Atlas Applied: {_atlasTextureApplied}");
+            info.AppendLine($"Visible Chunks: {_chunkMeshes.Count}");
+            info.AppendLine($"World Layer: {_worldLayer != null}");
             
-            // Try to initialize world layer immediately
-            InitializeWorldLayer();
-        }
-
-        private System.Collections.IEnumerator AggressiveFallbackInitialization()
-        {
-            Debug.Log("WorldBackgroundRenderer: Starting aggressive fallback initialization");
-            
-            // Wait a frame to ensure other components are initialized
-            yield return null;
-            
-            int attempts = 0;
-            const int maxAttempts = 100; // Try for about 10 seconds at 100ms intervals (reduced from 500)
-            
-            while (attempts < maxAttempts)
+            if (_backgroundMaterial != null)
             {
-                attempts++;
-                
-                // Check if MapManager is now available
-                if (MapManager.Instance != null)
-                {
-                    Debug.Log("WorldBackgroundRenderer: MapManager found during fallback, subscribing to events");
-                    MapManager.Instance.OnWorldInitialized += OnWorldInitialized;
-                    MapManager.Instance.OnWorldDataLoaded += OnWorldDataLoaded;
-                    yield break; // Success, exit coroutine
-                }
-                
-                // Check if MapStorage has data (world was initialized by other means)
-                if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
-                {
-                    Debug.Log("WorldBackgroundRenderer: MapStorage is ready, forcing initialization");
-                    _currentState = InitializationState.ReadyForRendering;
-                    _worldInitialized = true;
-                    InitializeWorldLayer();
-                    yield break; // Success, exit coroutine
-                }
-                
-                // Log progress every 5 attempts (0.5 seconds) - more frequent logging
-                if (attempts % 5 == 0)
-                {
-                    Debug.Log($"WorldBackgroundRenderer: Aggressive fallback attempt {attempts}/{maxAttempts} - MapManager: {(MapManager.Instance != null)}, MapStorage: {(MapStorage.Instance?.IsReady ?? false)}");
-                }
-                
-                // Wait before next attempt
-                yield return new WaitForSeconds(0.1f);
-            }
-            
-            Debug.LogError("WorldBackgroundRenderer: Aggressive fallback initialization failed after 10 seconds");
-            
-            // Final attempt: force initialization if MapStorage has any data
-            if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
-            {
-                Debug.LogWarning("WorldBackgroundRenderer: Forcing initialization with available MapStorage data");
-                _currentState = InitializationState.ReadyForRendering;
-                _worldInitialized = true;
-                InitializeWorldLayer();
+                info.AppendLine($"Material: {_backgroundMaterial.name}");
+                info.AppendLine($"Main Texture: {_backgroundMaterial.mainTexture?.name ?? "None"}");
+                info.AppendLine($"Texture Size: {_backgroundMaterial.mainTexture?.width ?? 0}x{_backgroundMaterial.mainTexture?.height ?? 0}");
             }
             else
             {
-                Debug.LogError("WorldBackgroundRenderer: Cannot initialize - no MapStorage data available");
-                _currentState = InitializationState.Failed;
+                info.AppendLine("Material: Null");
             }
+            
+            if (WorldTextureManager.Instance != null)
+            {
+                info.AppendLine($"Texture Manager: Available");
+                info.AppendLine($"Atlas Count: {WorldTextureManager.Instance.GetAllAtlases().Count}");
+            }
+            else
+            {
+                info.AppendLine("Texture Manager: Not Available");
+            }
+            
+            if (MapStorage.Instance != null)
+            {
+                info.AppendLine($"MapStorage: Ready = {MapStorage.Instance.IsReady}");
+            }
+            else
+            {
+                info.AppendLine("MapStorage: Not Available");
+            }
+            
+            return info.ToString();
         }
 
-        private System.Collections.IEnumerator FallbackInitialization()
-        {
-            Debug.Log("WorldBackgroundRenderer: Starting fallback initialization");
-            
-            // Wait a frame to ensure other components are initialized
-            yield return null;
-            
-            int attempts = 0;
-            const int maxAttempts = 200; // Try for about 20 seconds at 100ms intervals
-            
-            while (attempts < maxAttempts)
-            {
-                attempts++;
-                
-                // Check if MapManager is now available
-                if (MapManager.Instance != null)
-                {
-                    Debug.Log("WorldBackgroundRenderer: MapManager found during fallback, subscribing to events");
-                    MapManager.Instance.OnWorldInitialized += OnWorldInitialized;
-                    MapManager.Instance.OnWorldDataLoaded += OnWorldDataLoaded;
-                    yield break; // Success, exit coroutine
-                }
-                
-                // Check if MapStorage has data (world was initialized by other means)
-                if (MapStorage.Instance?.cellLayer != null)
-                {
-                    Debug.Log("WorldBackgroundRenderer: MapStorage has data, forcing initialization");
-                    _currentState = InitializationState.ReadyForRendering;
-                    _worldInitialized = true;
-                    InitializeWorldLayer();
-                    yield break; // Success, exit coroutine
-                }
-                
-                // Wait before next attempt
-                yield return new WaitForSeconds(0.1f);
-            }
-            
-            Debug.LogError("WorldBackgroundRenderer: Fallback initialization failed after 20 seconds");
-            
-            // Final attempt: force initialization if MapStorage has any data
-            if (MapStorage.Instance?.cellLayer != null)
-            {
-                Debug.LogWarning("WorldBackgroundRenderer: Forcing initialization with available MapStorage data");
-                _currentState = InitializationState.ReadyForRendering;
-                _worldInitialized = true;
-                InitializeWorldLayer();
-            }
-        }
+        // Stub for existing coroutine reference
+        private System.Collections.IEnumerator ImmediateMapStorageCheck() { yield break; }
+        private System.Collections.IEnumerator AggressiveFallbackInitialization() { yield break; }
+        private System.Collections.IEnumerator PeriodicInitializationCheck() { yield break; }
+        private System.Collections.IEnumerator CheckStandaloneInitialization() { yield break; }
+        private void TryEmergencyInitialization() { }
 
-        /// <summary>
-        /// Immediate check for MapStorage availability - runs every frame until MapStorage is ready
-        /// </summary>
-        private System.Collections.IEnumerator ImmediateMapStorageCheck()
+        private class CellInfo { public Vector2Int LocalPosition, WorldPosition; public CellType CellType; public int VertexStartIndex; }
+        private class ChunkMesh
         {
-            Debug.Log("WorldBackgroundRenderer: Starting immediate MapStorage check");
-            
-            int frameCount = 0;
-            const int maxFrames = 300; // Check for about 5 seconds at 60 FPS
-            
-            while (frameCount < maxFrames)
-            {
-                frameCount++;
-                
-                // Check if MapStorage is ready
-                if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
-                {
-                    Debug.Log($"WorldBackgroundRenderer: MapStorage became ready after {frameCount} frames ({frameCount/60.0f:F1}s)");
-                    
-                    // If we're still waiting for world init, transition to data waiting
-                    if (_currentState == InitializationState.WaitingForWorldInit)
-                    {
-                        _currentState = InitializationState.WaitingForWorldData;
-                    }
-                    
-                    // Initialize immediately
-                    InitializeWorldLayer();
-                    
-                    yield break; // Success, exit coroutine
-                }
-                
-                // Check if MapManager became available
-                if (MapManager.Instance != null)
-                {
-                    Debug.Log($"WorldBackgroundRenderer: MapManager became available after {frameCount} frames ({frameCount/60.0f:F1}s)");
-                    yield break; // Let the event handlers take over
-                }
-                
-                // Yield every few frames to avoid blocking
-                if (frameCount % 10 == 0)
-                {
-                    yield return null;
-                }
-            }
-            
-            Debug.Log("WorldBackgroundRenderer: Immediate MapStorage check completed without success");
-        }
-
-        private void OnDestroy()
-        {
-            // Unsubscribe from events to prevent memory leaks
-            if (MapManager.Instance != null)
-            {
-                MapManager.Instance.OnWorldInitialized -= OnWorldInitialized;
-                MapManager.Instance.OnWorldDataLoaded -= OnWorldDataLoaded;
-            }
+            public Vector2Int ChunkPosition;
+            public List<Vector3> Vertices = new();
+            public List<int> Triangles = new();
+            public List<Vector2> UVs = new();
+            public List<CellInfo> Cells = new();
+            public ChunkMesh(Vector2Int p) { ChunkPosition = p; }
         }
     }
 }

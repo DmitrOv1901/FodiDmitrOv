@@ -12,7 +12,7 @@ public class WorldLayer<T> : IDisposable
     private readonly int _chunkSize;
     private readonly int _chunkArea;
     private readonly int _widthChunks;
-    private readonly int _heightChunks;
+    public readonly int _heightChunks;
     private readonly int _maxChunksInMemory;
 
     // Public properties for access
@@ -129,7 +129,7 @@ public class WorldLayer<T> : IDisposable
 
     // --- Core Paging Logic ---
 
-    private T[] GetChunk(int chunkIndex, bool createIfMissing = false)
+    public T[] GetChunk(int chunkIndex, bool createIfMissing = false)
     {
         // 1. Check Cache
         if (_loadedChunks.TryGetValue(chunkIndex, out T[] chunk))
@@ -353,7 +353,7 @@ public class WorldLayer<T> : IDisposable
     // --- Helpers ---
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool GetChunkIndexAndLocal(int x, int y, out int chunkIndex, out int localIndex)
+    public bool GetChunkIndexAndLocal(int x, int y, out int chunkIndex, out int localIndex)
     {
         if (x < 0 || y < 0 || x >= _widthChunks * _chunkSize || y >= _heightChunks * _chunkSize)
         {

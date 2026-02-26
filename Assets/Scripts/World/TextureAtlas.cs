@@ -9,22 +9,18 @@ using Fodinae.Assets.Scripts.Game.Managers;
 
 namespace Fodinae.Assets.Scripts.World
 {
-    /// <summary>
-    /// Manages a single texture atlas for world cell textures.
-    /// Uses a 2D bin packing algorithm to efficiently place textures.
-    /// </summary>
     public class TextureAtlas
     {
         public int Size { get; }
         public int CellSize { get; }
         public int Padding { get; }
-        
+
         private Texture2D _atlasTexture;
         private Color32[] _atlasPixels;
         private readonly ConcurrentDictionary<CellType, AtlasCell> _cells = new();
         private readonly List<Rectangle> _freeRectangles = new();
         private readonly List<Rectangle> _usedRectangles = new();
-        
+
         private bool _isDirty = false;
         private readonly object _lock = new object();
 
@@ -33,154 +29,23 @@ namespace Fodinae.Assets.Scripts.World
             Size = size;
             CellSize = cellSize;
             Padding = padding;
-            
+
             _atlasTexture = new Texture2D(size, size, TextureFormat.RGBA32, false);
-            _atlasTexture.filterMode = FilterMode.Bilinear;
+            _atlasTexture.filterMode = FilterMode.Point; // Changed to Point for pixel art
             _atlasTexture.wrapMode = TextureWrapMode.Clamp;
             _atlasPixels = new Color32[size * size];
-            
-            // Initialize with transparent pixels
+
             for (int i = 0; i < _atlasPixels.Length; i++)
             {
                 _atlasPixels[i] = new Color32(0, 0, 0, 0);
             }
-            
+
             _atlasTexture.SetPixels32(_atlasPixels);
             _atlasTexture.Apply();
-            
-            // Start with one large free rectangle
+
             _freeRectangles.Add(new Rectangle(0, 0, size, size));
         }
 
-        /// <summary>
-        /// Try to add a texture to the atlas
-        /// </summary>
-        /// <param name="cellType">The cell type</param>
-        /// <param name="texture">The texture to add</param>
-        /// <param name="coordinate">Output coordinate if successful</param>
-        /// <returns>True if successfully added, false if no space available</returns>
-        public bool TryAddTexture(CellType cellType, Texture2D texture, out AtlasCoordinate coordinate)
-        {
-            coordinate = AtlasCoordinate.Empty;
-            
-            lock (_lock)
-            {
-                // Find the best fit rectangle
-                var bestFit = FindBestFit(texture.width, texture.height);
-                if (bestFit == null)
-                {
-                    return false;
-                }
-
-                // Create atlas cell
-                var atlasCell = new AtlasCell
-                {
-                    CellType = cellType,
-                    Rectangle = bestFit.Value,
-                    BaseCoordinate = new AtlasCoordinate(
-                        bestFit.Value.X, bestFit.Value.Y, 
-                        texture.width, texture.height, 
-                        Size, Size)
-                };
-
-                // Add to used rectangles and remove from free
-                _usedRectangles.Add(bestFit.Value);
-                SplitFreeRectangles(bestFit.Value);
-                
-                // Store the cell
-                _cells.TryAdd(cellType, atlasCell);
-                
-                // Mark as dirty for texture update
-                _isDirty = true;
-                
-                coordinate = atlasCell.BaseCoordinate;
-                return true;
-            }
-        }
-
-        /// <summary>
-        /// Get the atlas texture (updates if dirty)
-        /// </summary>
-        public async UniTask<Texture2D> GetAtlasTexture()
-        {
-            if (_isDirty)
-            {
-                await UpdateAtlasTexture();
-            }
-            return _atlasTexture;
-        }
-
-        /// <summary>
-        /// Update the atlas texture with all current cells
-        /// </summary>
-        public async UniTask UpdateAtlasTexture()
-        {
-            if (!_isDirty) return;
-
-            // Get all textures to copy
-            List<(Texture2D texture, Rectangle rect)> texturesToCopy;
-            
-            lock (_lock)
-            {
-                if (!_isDirty) return; // Double-check after acquiring lock
-
-                texturesToCopy = new List<(Texture2D texture, Rectangle rect)>();
-                
-                foreach (var cell in _cells.Values)
-                {
-                    // For now, just use the base texture
-                    // In the future, this could handle variations and animations
-                    var baseTexture = GetBaseTexture(cell.CellType);
-                    if (baseTexture != null)
-                    {
-                        texturesToCopy.Add((baseTexture, cell.Rectangle));
-                    }
-                }
-            }
-
-            // Copy textures to atlas in batches for performance
-            await CopyTexturesToAtlas(texturesToCopy);
-            
-            lock (_lock)
-            {
-                _isDirty = false;
-            }
-        }
-
-        /// <summary>
-        /// Get coordinate for a specific cell type and variation
-        /// </summary>
-        public AtlasCoordinate GetCoordinate(CellType cellType, CellVariation variation)
-        {
-            if (!_cells.TryGetValue(cellType, out var cell))
-            {
-                return AtlasCoordinate.Empty;
-            }
-
-            // For now, return the base coordinate
-            // In the future, this would calculate variation offsets
-            return cell.BaseCoordinate;
-        }
-
-        /// <summary>
-        /// Get coordinate for a specific cell type (no variation)
-        /// </summary>
-        public AtlasCoordinate GetCoordinate(CellType cellType)
-        {
-            return GetCoordinate(cellType, CellVariation.None);
-        }
-
-        /// <summary>
-        /// Check if a cell type is in this atlas
-        /// </summary>
-        public bool ContainsCell(CellType cellType)
-        {
-            return _cells.ContainsKey(cellType);
-        }
-
-        /// <summary>
-        /// Clear all textures from the atlas
-        /// </summary>
         public void Clear()
         {
             lock (_lock)
@@ -189,7 +54,7 @@ namespace Fodinae.Assets.Scripts.World
                 _usedRectangles.Clear();
                 _freeRectangles.Clear();
                 _freeRectangles.Add(new Rectangle(0, 0, Size, Size));
-                
+
                 // Clear atlas texture
                 for (int i = 0; i < _atlasPixels.Length; i++)
                 {
@@ -197,156 +62,142 @@ namespace Fodinae.Assets.Scripts.World
                 }
                 _atlasTexture.SetPixels32(_atlasPixels);
                 _atlasTexture.Apply();
-                
+
                 _isDirty = false;
             }
         }
 
-        /// <summary>
-        /// Find the best fitting rectangle for a texture using the MaxRects algorithm
-        /// </summary>
-        private Rectangle? FindBestFit(int width, int height)
+        public AtlasCoordinate GetCoordinate(CellType cellType, CellVariation variation)
         {
-            Rectangle? bestFit = null;
-            int bestScore = int.MaxValue;
-
-            foreach (var freeRect in _freeRectangles)
+            if (!_cells.TryGetValue(cellType, out var cell))
             {
-                // Check if texture fits
-                if (freeRect.Width >= width + Padding && freeRect.Height >= height + Padding)
-                {
-                    // Calculate score (smaller remaining area is better)
-                    int remainingWidth = freeRect.Width - width;
-                    int remainingHeight = freeRect.Height - height;
-                    int score = remainingWidth * remainingHeight;
+                return AtlasCoordinate.Empty;
+            }
+            return cell.BaseCoordinate;
+        }
 
-                    if (score < bestScore)
+        public AtlasCoordinate GetCoordinate(CellType cellType)
+        {
+            return GetCoordinate(cellType, CellVariation.None);
+        }
+
+        public bool TryAddTexture(CellType cellType, Texture2D texture, out AtlasCoordinate coordinate)
+        {
+            coordinate = AtlasCoordinate.Empty;
+
+            lock (_lock)
+            {
+                var bestFit = FindBestFit(texture.width, texture.height);
+                if (bestFit == null) return false;
+
+                var atlasCell = new AtlasCell
+                {
+                    CellType = cellType,
+                    Rectangle = bestFit.Value,
+                    BaseCoordinate = new AtlasCoordinate(
+                        bestFit.Value.X, bestFit.Value.Y,
+                        texture.width, texture.height,
+                        Size, Size)
+                };
+
+                _usedRectangles.Add(bestFit.Value);
+                SplitFreeRectangles(bestFit.Value);
+                _cells.TryAdd(cellType, atlasCell);
+                _isDirty = true;
+
+                coordinate = atlasCell.BaseCoordinate;
+                return true;
+            }
+        }
+
+        public async UniTask<Texture2D> GetAtlasTexture()
+        {
+            if (_isDirty) await UpdateAtlasTexture();
+            return _atlasTexture;
+        }
+
+        public async UniTask UpdateAtlasTexture()
+        {
+            // Ensure we start on Main Thread
+            await UniTask.SwitchToMainThread();
+
+            if (!_isDirty) return;
+
+            List<(Texture2D texture, Rectangle rect)> texturesToCopy;
+
+            lock (_lock)
+            {
+                if (!_isDirty) return;
+
+                texturesToCopy = new List<(Texture2D texture, Rectangle rect)>();
+
+                foreach (var cell in _cells.Values)
+                {
+                    var baseTexture = GetBaseTexture(cell.CellType);
+                    if (baseTexture != null)
                     {
-                        bestScore = score;
-                        bestFit = new Rectangle(freeRect.X, freeRect.Y, width, height);
+                        texturesToCopy.Add((baseTexture, cell.Rectangle));
                     }
                 }
             }
 
-            return bestFit;
-        }
+            await CopyTexturesToAtlas(texturesToCopy);
 
-        /// <summary>
-        /// Split free rectangles when a new rectangle is placed
-        /// </summary>
-        private void SplitFreeRectangles(Rectangle usedRect)
-        {
-            var newFreeRectangles = new List<Rectangle>();
-            
-            foreach (var freeRect in _freeRectangles)
+            lock (_lock)
             {
-                if (Intersects(freeRect, usedRect))
-                {
-                    // Split the free rectangle
-                    SplitRectangle(freeRect, usedRect, newFreeRectangles);
-                }
-                else
-                {
-                    newFreeRectangles.Add(freeRect);
-                }
-            }
-            
-            _freeRectangles.Clear();
-            _freeRectangles.AddRange(newFreeRectangles);
-        }
-
-        /// <summary>
-        /// Split a rectangle around an used rectangle
-        /// </summary>
-        private void SplitRectangle(Rectangle freeRect, Rectangle usedRect, List<Rectangle> newFreeRectangles)
-        {
-            // Create rectangles for the remaining space
-            // Top rectangle
-            if (usedRect.Y > freeRect.Y)
-            {
-                newFreeRectangles.Add(new Rectangle(
-                    freeRect.X, freeRect.Y,
-                    freeRect.Width, usedRect.Y - freeRect.Y));
-            }
-            
-            // Bottom rectangle
-            if (usedRect.Y + usedRect.Height < freeRect.Y + freeRect.Height)
-            {
-                newFreeRectangles.Add(new Rectangle(
-                    freeRect.X, usedRect.Y + usedRect.Height,
-                    freeRect.Width, (freeRect.Y + freeRect.Height) - (usedRect.Y + usedRect.Height)));
-            }
-            
-            // Left rectangle
-            if (usedRect.X > freeRect.X)
-            {
-                newFreeRectangles.Add(new Rectangle(
-                    freeRect.X, freeRect.Y,
-                    usedRect.X - freeRect.X, freeRect.Height));
-            }
-            
-            // Right rectangle
-            if (usedRect.X + usedRect.Width < freeRect.X + freeRect.Width)
-            {
-                newFreeRectangles.Add(new Rectangle(
-                    usedRect.X + usedRect.Width, freeRect.Y,
-                    (freeRect.X + freeRect.Width) - (usedRect.X + usedRect.Width), freeRect.Height));
+                _isDirty = false;
             }
         }
 
-        /// <summary>
-        /// Check if two rectangles intersect
-        /// </summary>
-        private bool Intersects(Rectangle a, Rectangle b)
-        {
-            return a.X < b.X + b.Width &&
-                   a.X + a.Width > b.X &&
-                   a.Y < b.Y + b.Height &&
-                   a.Y + a.Height > b.Y;
-        }
-
-        /// <summary>
-        /// Copy textures to the atlas in batches
-        /// </summary>
         private async UniTask CopyTexturesToAtlas(List<(Texture2D texture, Rectangle rect)> textures)
         {
-            // Process textures in batches to avoid blocking the main thread
-            const int batchSize = 4;
+            const int batchSize = 10;
+
             for (int i = 0; i < textures.Count; i += batchSize)
             {
                 var batch = textures.Skip(i).Take(batchSize).ToList();
-                
-                await UniTask.SwitchToThreadPool();
-                
-                foreach (var (texture, rect) in batch)
+
+                // 1. READ ON MAIN THREAD
+                // We extract the raw pixel data here because Texture2D.GetPixels32() is Main Thread Only
+                var pixelDataList = new List<(Color32[] pixels, int width, int height, Rectangle rect)>();
+
+                foreach (var (tex, rect) in batch)
                 {
-                    CopyTextureToAtlas(texture, rect);
+                    if (tex != null)
+                    {
+                        pixelDataList.Add((tex.GetPixels32(), tex.width, tex.height, rect));
+                    }
                 }
-                
+
+                // 2. PROCESS ON BACKGROUND THREAD
+                // Now we switch threads to do the heavy array copying
+                await UniTask.SwitchToThreadPool();
+
+                foreach (var data in pixelDataList)
+                {
+                    CopyPixelsToAtlasArray(data.pixels, data.width, data.height, data.rect);
+                }
+
+                // 3. BACK TO MAIN THREAD
                 await UniTask.SwitchToMainThread();
             }
-            
+
             _atlasTexture.SetPixels32(_atlasPixels);
             _atlasTexture.Apply();
         }
 
-        /// <summary>
-        /// Copy a single texture to the atlas
-        /// </summary>
-        private void CopyTextureToAtlas(Texture2D source, Rectangle destination)
+        private void CopyPixelsToAtlasArray(Color32[] sourcePixels, int width, int height, Rectangle destination)
         {
-            var sourcePixels = source.GetPixels32();
-            
-            for (int y = 0; y < source.height; y++)
+            for (int y = 0; y < height; y++)
             {
-                for (int x = 0; x < source.width; x++)
+                for (int x = 0; x < width; x++)
                 {
-                    int sourceIndex = y * source.width + x;
+                    int sourceIndex = y * width + x;
                     int destX = destination.X + x;
                     int destY = destination.Y + y;
                     int destIndex = destY * Size + destX;
-                    
-                    if (destIndex >= 0 && destIndex < _atlasPixels.Length)
+
+                    if (destIndex >= 0 && destIndex < _atlasPixels.Length && sourceIndex < sourcePixels.Length)
                     {
                         _atlasPixels[destIndex] = sourcePixels[sourceIndex];
                     }
@@ -354,88 +205,95 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        /// <summary>
-        /// Get the base texture for a cell type (placeholder for now)
-        /// </summary>
         private Texture2D GetBaseTexture(CellType cellType)
         {
-            // This would normally get the texture from the cache
-            // For now, return a placeholder
+            if (WorldTextureManager.Instance != null)
+            {
+                // Reflection hack to access private cache if needed, or rely on public API
+                // Assuming WorldTextureManager has public access or we fall back to placeholder
+                // For safety, we use the placeholder if we can't easily reach back
+            }
             return CreatePlaceholderTexture(cellType);
         }
 
-        /// <summary>
-        /// Create a placeholder texture for testing
-        /// </summary>
         private Texture2D CreatePlaceholderTexture(CellType cellType)
         {
             var texture = new Texture2D(CellSize, CellSize);
             var color = GetCellColor(cellType);
-            
-            for (int i = 0; i < CellSize * CellSize; i++)
-            {
-                texture.SetPixel(i % CellSize, i / CellSize, color);
-            }
-            
+            var pixels = new Color[CellSize * CellSize];
+            for (int i = 0; i < pixels.Length; i++) pixels[i] = color;
+            texture.SetPixels(pixels);
             texture.Apply();
             return texture;
         }
 
-        /// <summary>
-        /// Get a color based on cell type for placeholder textures
-        /// Uses server-provided colors when available, falls back to hardcoded colors
-        /// </summary>
         private Color GetCellColor(CellType cellType)
         {
-            // Try to get color from server configuration first
             if (MapManager.Instance != null)
             {
                 var serverColor = MapManager.Instance.GetCellMinimapColor(cellType);
-                if (serverColor.a > 0) // Check if a valid color was returned
-                {
-                    return serverColor;
-                }
+                if (serverColor.a > 0) return serverColor;
             }
-
-            // Fallback to hardcoded colors if server data is not available
             return cellType switch
             {
-                CellType.Empty => Color.gray,
+                CellType.Empty => new Color(0.2f, 0.2f, 0.2f),
                 CellType.Road => new Color(0.8f, 0.8f, 0.8f),
-                CellType.Boulder1 or CellType.Boulder2 or CellType.Boulder3 => Color.black,
-                CellType.WhiteSand or CellType.DarkWhiteSand => Color.yellow,
-                CellType.GrayAcid or CellType.PurpleAcid => Color.green,
-                _ => Color.magenta // Default color
+                CellType.Boulder1 => Color.black,
+                CellType.WhiteSand => new Color(1f, 0.92f, 0.8f),
+                CellType.GrayAcid => new Color(0f, 1f, 0f),
+                _ => Color.magenta
             };
         }
+
+        // Helper structs/methods
+        private Rectangle? FindBestFit(int width, int height)
+        {
+            Rectangle? bestFit = null;
+            int bestScore = int.MaxValue;
+            foreach (var freeRect in _freeRectangles)
+            {
+                if (freeRect.Width >= width + Padding && freeRect.Height >= height + Padding)
+                {
+                    int score = (freeRect.Width - width) * (freeRect.Height - height);
+                    if (score < bestScore) { bestScore = score; bestFit = new Rectangle(freeRect.X, freeRect.Y, width, height); }
+                }
+            }
+            return bestFit;
+        }
+
+        private void SplitFreeRectangles(Rectangle usedRect)
+        {
+            var newFree = new List<Rectangle>();
+            foreach (var free in _freeRectangles)
+            {
+                if (Intersects(free, usedRect)) SplitRectangle(free, usedRect, newFree);
+                else newFree.Add(free);
+            }
+            _freeRectangles.Clear();
+            _freeRectangles.AddRange(newFree);
+        }
+
+        private void SplitRectangle(Rectangle free, Rectangle used, List<Rectangle> newFree)
+        {
+            if (used.Y > free.Y) newFree.Add(new Rectangle(free.X, free.Y, free.Width, used.Y - free.Y));
+            if (used.Y + used.Height < free.Y + free.Height) newFree.Add(new Rectangle(free.X, used.Y + used.Height, free.Width, (free.Y + free.Height) - (used.Y + used.Height)));
+            if (used.X > free.X) newFree.Add(new Rectangle(free.X, free.Y, used.X - free.X, free.Height));
+            if (used.X + used.Width < free.X + free.Width) newFree.Add(new Rectangle(used.X + used.Width, free.Y, (free.X + free.Width) - (used.X + used.Width), free.Height));
+        }
+
+        private bool Intersects(Rectangle a, Rectangle b) => a.X < b.X + b.Width && a.X + a.Width > b.X && a.Y < b.Y + b.Height && a.Y + a.Height > b.Y;
     }
 
-    /// <summary>
-    /// Represents a rectangle in 2D space
-    /// </summary>
     public struct Rectangle
     {
-        public int X { get; }
-        public int Y { get; }
-        public int Width { get; }
-        public int Height { get; }
-
-        public Rectangle(int x, int y, int width, int height)
-        {
-            X = x;
-            Y = y;
-            Width = width;
-            Height = height;
-        }
+        public int X, Y, Width, Height;
+        public Rectangle(int x, int y, int width, int height) { X = x; Y = y; Width = width; Height = height; }
     }
 
-    /// <summary>
-    /// Represents a cell in the atlas
-    /// </summary>
     internal struct AtlasCell
     {
-        public CellType CellType { get; set; }
-        public Rectangle Rectangle { get; set; }
-        public AtlasCoordinate BaseCoordinate { get; set; }
+        public CellType CellType;
+        public Rectangle Rectangle;
+        public AtlasCoordinate BaseCoordinate;
     }
 }

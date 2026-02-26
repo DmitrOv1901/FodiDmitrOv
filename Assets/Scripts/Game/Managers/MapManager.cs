@@ -25,15 +25,18 @@ namespace Fodinae.Assets.Scripts.Game.Managers
             }
         }
 
-        public event Action OnWorldInitialized;
-        public Action OnWorldDataLoaded;
+    public Action OnWorldInitialized;
+    public Action OnWorldDataLoaded;
 
-        private CellConfigurationPacket[] cellConfigurations;
-        private string worldCodeName;
-        private string worldDisplayName;
-        private ushort width;
-        private ushort height;
-        private bool _isWorldInitialized = false;
+    private CellConfigurationPacket[] cellConfigurations;
+    private string worldCodeName;
+    private string worldDisplayName;
+    private ushort width;
+    private ushort height;
+    public bool _isWorldInitialized = false;
+    
+    // Add public property for standalone mode support
+    public bool IsStandaloneMode { get; set; } = false;
 
         void Awake()
         {
@@ -48,39 +51,159 @@ namespace Fodinae.Assets.Scripts.Game.Managers
 
     public void LoadWorldInit(WorldInitPacket packet)
     {
+        Debug.Log($"[MapManager] LoadWorldInit called: {packet.DisplayName} ({packet.CodeName}) [{packet.Width}x{packet.Height}]");
+        
+        // Validate packet data
+        if (packet == null)
+        {
+            Debug.LogError("[MapManager] LoadWorldInit called with null packet");
+            return;
+        }
+        
+        if (string.IsNullOrEmpty(packet.CodeName))
+        {
+            Debug.LogError("[MapManager] LoadWorldInit called with null or empty world code name");
+            return;
+        }
+        
+        if (packet.Width <= 0 || packet.Height <= 0)
+        {
+            Debug.LogError($"[MapManager] LoadWorldInit called with invalid dimensions: {packet.Width}x{packet.Height}");
+            return;
+        }
+        
+        // Store world information
         worldCodeName = packet.CodeName;
         worldDisplayName = packet.DisplayName;
         width = packet.Width;
         height = packet.Height;
         cellConfigurations = packet.Cells;
-        Debug.Log($"World initialized: {packet.DisplayName} ({packet.CodeName}) [{width}x{height}]");
+        Debug.Log($"[MapManager] World initialized: {packet.DisplayName} ({packet.CodeName}) [{width}x{height}]");
         
-        // Initialize MapStorage with the world data
-        MapStorage.Instance.InitWorld(packet.CodeName, width, height);
+        // CRITICAL: IMMEDIATE MapStorage initialization - this is essential for terrain rendering
+        Debug.Log($"[MapManager] IMMEDIATELY initializing MapStorage with world '{packet.CodeName}' dimensions {width}x{height}");
         
-        // Verify that MapStorage was properly initialized
-        if (!MapStorage.Instance.IsReady)
+        try
         {
-            Debug.LogError($"MapStorage failed to initialize cell layer for world {packet.CodeName}");
-            Debug.LogError($"MapStorage state: IsInitialized={MapStorage.Instance.IsInitialized()}, cellLayer={(MapStorage.Instance.cellLayer != null ? "not null" : "null")}");
+            // Ensure MapStorage is properly initialized
+            MapStorage.Instance.InitWorld(packet.CodeName, width, height);
+            
+            // CRITICAL: Verify that MapStorage was properly initialized
+            if (!MapStorage.Instance.IsReady)
+            {
+                Debug.LogError($"[MapManager] CRITICAL: MapStorage failed to initialize for world {packet.CodeName}");
+                Debug.LogError($"[MapManager] MapStorage state: IsReady={MapStorage.Instance.IsReady}, IsInitialized={MapStorage.Instance.IsInitialized()}");
+                Debug.LogError($"[MapManager] MapStorage cellLayer: {(MapStorage.Instance.cellLayer != null ? "not null" : "NULL - this is the problem!")}");
+                Debug.LogError($"[MapManager] MapStorage world name: {MapStorage.Instance.GetWorldCodeName()}");
+                
+                // Try emergency initialization with more detailed error handling
+                Debug.LogWarning("[MapManager] Attempting emergency MapStorage initialization...");
+                try
+                {
+                    MapStorage.Instance.Dispose();
+                    MapStorage.Instance.InitWorld(packet.CodeName, width, height);
+                    
+                    if (MapStorage.Instance.IsReady)
+                    {
+                        Debug.Log("[MapManager] Emergency MapStorage initialization successful!");
+                    }
+                    else
+                    {
+                        Debug.LogError("[MapManager] Emergency MapStorage initialization FAILED - terrain rendering will not work");
+                        Debug.LogError("[MapManager] This is a CRITICAL failure - terrain rendering system cannot function");
+                        
+                        // Try creating a test world as last resort
+                        Debug.LogWarning("[MapManager] Creating test world as fallback...");
+                        MapStorage.Instance.Dispose();
+                        MapStorage.Instance.InitWorld("fallback_test_world", 64, 64);
+                        
+                        if (MapStorage.Instance.IsReady)
+                        {
+                            Debug.Log("[MapManager] Test world created successfully as fallback");
+                            worldCodeName = "fallback_test_world";
+                            width = 64;
+                            height = 64;
+                        }
+                        else
+                        {
+                            Debug.LogError("[MapManager] Even test world creation failed - terrain rendering system is broken");
+                        }
+                    }
+                }
+                catch (System.Exception emergencyEx)
+                {
+                    Debug.LogError($"[MapManager] Emergency MapStorage initialization threw exception: {emergencyEx.Message}");
+                    Debug.LogError($"[MapManager] Exception details: {emergencyEx.GetType().Name}");
+                }
+            }
+            else
+            {
+                Debug.Log($"[MapManager] MapStorage initialized successfully for world '{packet.CodeName}'");
+                Debug.Log($"[MapManager] WorldLayer created: {MapStorage.Instance.cellLayer.WidthChunks}x{MapStorage.Instance.cellLayer.HeightChunks} chunks");
+                Debug.Log($"[MapManager] Chunk size: {MapStorage.Instance.cellLayer.ChunkSize}");
+            }
         }
-        else
+        catch (System.Exception ex)
         {
-            Debug.Log($"MapStorage initialized successfully for world '{packet.CodeName}' with layer size: {MapStorage.Instance.cellLayer.WidthChunks}x{MapStorage.Instance.cellLayer.HeightChunks}");
+            Debug.LogError($"[MapManager] CRITICAL ERROR during MapStorage initialization: {ex.Message}");
+            Debug.LogError($"[MapManager] Exception type: {ex.GetType().Name}");
+            Debug.LogError($"[MapManager] Stack trace: {ex.StackTrace}");
+            
+            // Provide specific guidance based on exception type
+            if (ex is System.IO.IOException)
+            {
+                Debug.LogError("[MapManager] This is likely a file I/O issue. Check disk space and file permissions.");
+            }
+            else if (ex is System.ArgumentException)
+            {
+                Debug.LogError("[MapManager] This is likely an invalid parameter issue. Check world dimensions.");
+            }
+            else if (ex is System.OutOfMemoryException)
+            {
+                Debug.LogError("[MapManager] This is a memory issue. The world may be too large for available memory.");
+            }
         }
         
         _isWorldInitialized = true;
+        Debug.Log($"[MapManager] Triggering OnWorldInitialized event");
         OnWorldInitialized?.Invoke();
         
-        // Only trigger OnWorldDataLoaded if MapStorage is actually ready
+        // CRITICAL: Only trigger OnWorldDataLoaded if MapStorage is actually ready
+        // This is the key fix - terrain rendering depends on this event being triggered correctly
         if (MapStorage.Instance.IsReady)
         {
+            Debug.Log($"[MapManager] MapStorage is ready, triggering OnWorldDataLoaded event");
             OnWorldDataLoaded?.Invoke();
-            Debug.Log("MapManager: World data loaded event triggered successfully");
+            Debug.Log("[MapManager] World data loaded event triggered successfully");
         }
         else
         {
-            Debug.LogWarning("MapManager: World data loaded event skipped - MapStorage not ready");
+            Debug.LogError("[MapManager] CRITICAL: MapStorage not ready, skipping OnWorldDataLoaded event");
+            Debug.LogError($"[MapManager] This means terrain rendering will fail - MapStorage must be ready!");
+            Debug.LogError($"[MapManager] MapStorage details: IsReady={MapStorage.Instance.IsReady}, IsInitialized={MapStorage.Instance.IsInitialized()}, cellLayer={(MapStorage.Instance.cellLayer != null ? "not null" : "NULL")}");
+            Debug.LogError("[MapManager] Terrain rendering will remain in 'WaitingForWorldInit' state until this is resolved");
+            
+            // Try to force the event anyway after a delay to see if MapStorage becomes ready
+            Debug.LogWarning("[MapManager] Scheduling delayed OnWorldDataLoaded trigger attempt...");
+            StartCoroutine(DelayedWorldDataLoadedTrigger());
+        }
+    }
+
+    /// <summary>
+    /// Delayed attempt to trigger OnWorldDataLoaded event
+    /// </summary>
+    private System.Collections.IEnumerator DelayedWorldDataLoadedTrigger()
+    {
+        yield return new WaitForSeconds(2.0f);
+        
+        if (MapStorage.Instance.IsReady)
+        {
+            Debug.Log("[MapManager] MapStorage became ready after delay, triggering OnWorldDataLoaded event");
+            OnWorldDataLoaded?.Invoke();
+        }
+        else
+        {
+            Debug.LogError("[MapManager] MapStorage still not ready after delay - terrain rendering will remain broken");
         }
     }
 

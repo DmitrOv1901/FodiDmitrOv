@@ -567,6 +567,21 @@ MonoBehaviour:
   _maxBatchSize: 32
   _backgroundZ: -10
   _sortingOrder: -1000
+--- !u!114 &1053268852
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1053268847}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1234567890abcdef1234567890abcdef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Fodinae.Assets.Scripts.World.TerrainDiagnosticRunner
+  _autoRunOnStart: 1
+  _startDelay: 2
+  _enableDetailedLogging: 1
 --- !u!23 &1053268850
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -633,6 +648,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1068468522}
   - component: {fileID: 1068468521}
+  - component: {fileID: 1068468523}
   m_Layer: 0
   m_Name: AutoMapManager
   m_TagString: Untagged
@@ -654,6 +670,22 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::Fodinae.Assets.Scripts.World.AutoMapManager
   _autoCreateMapManager: 1
   _checkInterval: 2
+--- !u!114 &1068468523
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1068468520}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1234567890abcdef1234567890abcdef, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::Fodinae.Assets.Scripts.World.TerrainFixTester
+  _autoTestOnStart: 1
+  _enableDetailedLogging: 1
+  _forceReinitializeOnStart: 0
+  _createTestWorldIfMissing: 1
 --- !u!4 &1068468522
 Transform:
   m_ObjectHideFlags: 0

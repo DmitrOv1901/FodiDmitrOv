@@ -401,9 +401,7 @@ namespace Fodinae.Assets.Scripts.World
         {
             if (_renderer == null) return "Null";
             
-            // This would need to be implemented in WorldBackgroundRenderer
-            // For now, return a basic status
-            return "Active";
+            return _renderer.GetDiagnosticInfo();
         }
 
         /// <summary>
@@ -443,6 +441,109 @@ namespace Fodinae.Assets.Scripts.World
             // Wait and test again
             StartCoroutine(DelayedDiagnostic());
         }
+
+        /// <summary>
+        /// Force initialization with detailed error reporting and recovery
+        /// </summary>
+        public void ForceInitializationWithRecovery()
+        {
+            Debug.Log("=== Force Initialization with Recovery ===");
+            
+            // Check MapManager state
+            if (MapManager.Instance == null)
+            {
+                Debug.LogError("MapManager not found - cannot force initialization");
+                return;
+            }
+
+            Debug.Log($"MapManager state: World={MapManager.Instance.WorldDisplayName}, Width={MapManager.Instance.WorldWidth}, Height={MapManager.Instance.WorldHeight}");
+            
+            // Check if MapStorage is ready
+            if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
+            {
+                Debug.Log("MapStorage is already ready, forcing renderer initialization");
+                _renderer?.ForceInitialization();
+                return;
+            }
+
+            // Try to re-initialize MapStorage if we have world data
+            if (MapManager.Instance.WorldWidth > 0 && MapManager.Instance.WorldHeight > 0)
+            {
+                Debug.Log($"Attempting to re-initialize MapStorage with world dimensions {MapManager.Instance.WorldWidth}x{MapManager.Instance.WorldHeight}");
+                MapStorage.Instance.InitWorld(MapManager.Instance.WorldCodeName, MapManager.Instance.WorldWidth, MapManager.Instance.WorldHeight);
+                
+                // Wait a moment then check if it worked
+                StartCoroutine(CheckInitializationResult());
+            }
+            else
+            {
+                Debug.LogWarning("No world data available to re-initialize MapStorage");
+            }
+        }
+
+        /// <summary>
+        /// Check initialization result and provide detailed feedback
+        /// </summary>
+        private IEnumerator CheckInitializationResult()
+        {
+            yield return new WaitForSeconds(1.0f);
+            
+            Debug.Log("=== Checking Initialization Result ===");
+            Debug.Log($"MapStorage ready: {MapStorage.Instance?.IsReady ?? false}");
+            Debug.Log($"Renderer properly configured: {_renderer?.IsProperlyConfigured() ?? false}");
+            Debug.Log($"Visible chunks: {_renderer?.GetVisibleChunkCount() ?? 0}");
+            
+            if (MapStorage.Instance?.IsReady ?? false)
+            {
+                Debug.Log("MapStorage initialization successful, forcing renderer update");
+                _renderer?.ForceInitialization();
+            }
+            else
+            {
+                Debug.LogError("MapStorage initialization failed - check logs for specific errors");
+                
+                // Try emergency recovery
+                StartCoroutine(EmergencyRecovery());
+            }
+        }
+
+        /// <summary>
+        /// Emergency recovery mechanism for persistent initialization failures
+        /// </summary>
+        private IEnumerator EmergencyRecovery()
+        {
+            Debug.Log("=== Starting Emergency Recovery ===");
+            
+            // Wait a bit more for any pending operations
+            yield return new WaitForSeconds(2.0f);
+            
+            // Force MapStorage disposal and re-creation
+            if (MapStorage.Instance != null)
+            {
+                MapStorage.Instance.Dispose();
+                Debug.Log("MapStorage disposed for emergency recovery");
+            }
+            
+            // Try to create a minimal test world
+            if (MapManager.Instance != null)
+            {
+                Debug.Log("Creating minimal test world for emergency recovery");
+                MapStorage.Instance.InitWorld("emergency_test", 32, 32);
+                
+                yield return new WaitForSeconds(0.5f);
+                
+                if (MapStorage.Instance.IsReady)
+                {
+                    Debug.Log("Emergency recovery successful - minimal world created");
+                    _renderer?.ForceInitialization();
+                }
+                else
+                {
+                    Debug.LogError("Emergency recovery failed - system may need restart");
+                }
+            }
+        }
+
 
         private IEnumerator DelayedDiagnostic()
         {

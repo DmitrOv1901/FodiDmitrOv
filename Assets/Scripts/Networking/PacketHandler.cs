@@ -11,81 +11,279 @@ namespace Fodinae.Assets.Scripts.Networking
 {
     public class PacketHandler : MonoBehaviour
     {
+        private bool _isInitialized = false;
+        private int _packetCount = 0;
+        private int _worldInitPacketsReceived = 0;
+        private int _mapRegionPacketsReceived = 0;
+
         void Start()
         {
-            ConnectionManager.Instance.OnPacketReceived += OnPacketReceived;
+            Debug.Log("[PacketHandler] Starting initialization...");
             
-            // Subscribe to MapManager events to ensure proper initialization
+            // Verify ConnectionManager exists
+            if (ConnectionManager.Instance == null)
+            {
+                Debug.LogError("[PacketHandler] ConnectionManager not found - cannot receive packets");
+                return;
+            }
+
+            // Verify MapManager exists
+            if (MapManager.Instance == null)
+            {
+                Debug.LogError("[PacketHandler] MapManager not found - cannot process world initialization");
+                return;
+            }
+
+            // Verify MapStorage exists
+            if (MapStorage.Instance == null)
+            {
+                Debug.LogError("[PacketHandler] MapStorage not found - cannot process map data");
+                return;
+            }
+
+            // Subscribe to events
+            ConnectionManager.Instance.OnPacketReceived += OnPacketReceived;
             MapManager.Instance.OnWorldInitialized += OnWorldInitialized;
             MapManager.Instance.OnWorldDataLoaded += OnWorldDataLoaded;
+            
+            _isInitialized = true;
+            Debug.Log("[PacketHandler] Initialization complete - ready to receive packets");
         }
 
         void OnDestroy()
         {
+            if (!_isInitialized) return;
+
             if (ConnectionManager.Instance != null)
             {
                 ConnectionManager.Instance.OnPacketReceived -= OnPacketReceived;
             }
             
-            // Unsubscribe from MapManager events
             if (MapManager.Instance != null)
             {
                 MapManager.Instance.OnWorldInitialized -= OnWorldInitialized;
                 MapManager.Instance.OnWorldDataLoaded -= OnWorldDataLoaded;
             }
+            
+            Debug.Log($"[PacketHandler] Destroyed - processed {_packetCount} total packets ({_worldInitPacketsReceived} WorldInit, {_mapRegionPacketsReceived} MapRegion)");
         }
 
-        private void OnPacketReceived(ServerPacket packet)
+        public void OnPacketReceived(ServerPacket packet)
         {
+            if (!_isInitialized)
+            {
+                Debug.LogWarning("[PacketHandler] Received packet but not properly initialized");
+                return;
+            }
+
+            _packetCount++;
+            
+            // Log packet type for debugging
+            string packetType = packet.Payload?.GetType().Name ?? "Unknown";
+            Debug.Log($"[PacketHandler] Received packet #{_packetCount}: {packetType}");
+
             if (packet.Payload is WorldInitPacket worldInitPacket)
             {
-                MapManager.Instance.LoadWorldInit(worldInitPacket);
+                HandleWorldInitPacket(worldInitPacket);
             }
             else if (packet.Payload is HBPacket hbPacket)
             {
-                bool hasMapData = false;
-                foreach (var p in hbPacket.Payload)
-                {
-                    if (p is MapRegionPacket mapRegionPacket)
-                    {
-                        hasMapData = true;
-                        
-                        // Ensure MapStorage is initialized before trying to access cellLayer
-                        if (MapStorage.Instance.cellLayer == null)
-                        {
-                            Debug.LogError("MapStorage.cellLayer is null, cannot process map region data");
-                            return;
-                        }
+                HandleHBPacket(hbPacket);
+            }
+            else
+            {
+                // Log other packet types for debugging
+                Debug.Log($"[PacketHandler] Packet type {packetType} not handled by this handler");
+            }
+        }
 
+        public void HandleWorldInitPacket(WorldInitPacket worldInitPacket)
+        {
+            _worldInitPacketsReceived++;
+            Debug.Log($"[PacketHandler] Processing WorldInitPacket #{_worldInitPacketsReceived}");
+            Debug.Log($"[PacketHandler] World: {worldInitPacket.DisplayName} ({worldInitPacket.CodeName}) [{worldInitPacket.Width}x{worldInitPacket.Height}]");
+
+            try
+            {
+                // Verify MapManager is available
+                if (MapManager.Instance == null)
+                {
+                    Debug.LogError("[PacketHandler] MapManager not available for WorldInit processing");
+                    return;
+                }
+
+                // Call MapManager.LoadWorldInit immediately
+                Debug.Log("[PacketHandler] Calling MapManager.LoadWorldInit...");
+                MapManager.Instance.LoadWorldInit(worldInitPacket);
+                Debug.Log("[PacketHandler] MapManager.LoadWorldInit completed successfully");
+                
+                // CRITICAL: Verify MapStorage is ready and trigger OnWorldDataLoaded if successful
+                if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
+                {
+                    Debug.Log("[PacketHandler] MapStorage is ready, triggering OnWorldDataLoaded event");
+                    MapManager.Instance.OnWorldDataLoaded?.Invoke();
+                    Debug.Log("[PacketHandler] OnWorldDataLoaded event triggered successfully");
+                }
+                else
+                {
+                    Debug.LogError("[PacketHandler] CRITICAL: MapStorage not ready after WorldInit processing");
+                    Debug.LogError($"[PacketHandler] MapStorage state: IsReady={MapStorage.Instance?.IsReady ?? false}, IsInitialized={MapStorage.Instance?.IsInitialized() ?? false}");
+                    Debug.LogError($"[PacketHandler] MapStorage cellLayer: {(MapStorage.Instance?.cellLayer != null ? "not null" : "NULL - this is the problem!")}");
+                    
+                    // Try emergency MapStorage initialization
+                    Debug.LogWarning("[PacketHandler] Attempting emergency MapStorage initialization...");
+                    try
+                    {
+                        if (MapStorage.Instance != null)
+                        {
+                            MapStorage.Instance.Dispose();
+                        }
+                        MapStorage.Instance.InitWorld(worldInitPacket.CodeName, worldInitPacket.Width, worldInitPacket.Height);
+                        
+                        if (MapStorage.Instance.IsReady)
+                        {
+                            Debug.Log("[PacketHandler] Emergency MapStorage initialization successful!");
+                            MapManager.Instance.OnWorldDataLoaded?.Invoke();
+                            Debug.Log("[PacketHandler] OnWorldDataLoaded event triggered after emergency initialization");
+                        }
+                        else
+                        {
+                            Debug.LogError("[PacketHandler] Emergency MapStorage initialization FAILED");
+                            Debug.LogError("[PacketHandler] Terrain rendering will remain in 'WaitingForWorldInit' state");
+                        }
+                    }
+                    catch (System.Exception emergencyEx)
+                    {
+                        Debug.LogError($"[PacketHandler] Emergency MapStorage initialization threw exception: {emergencyEx.Message}");
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[PacketHandler] Error processing WorldInitPacket: {ex.Message}");
+                Debug.LogError($"[PacketHandler] Exception details: {ex.StackTrace}");
+            }
+        }
+
+        private void HandleHBPacket(HBPacket hbPacket)
+        {
+            bool hasMapData = false;
+            bool allMapDataProcessed = true;
+            
+            foreach (var p in hbPacket.Payload)
+            {
+                if (p is MapRegionPacket mapRegionPacket)
+                {
+                    _mapRegionPacketsReceived++;
+                    hasMapData = true;
+                    
+                    Debug.Log($"[PacketHandler] Processing MapRegionPacket #{_mapRegionPacketsReceived}: X={mapRegionPacket.X}, Y={mapRegionPacket.Y}, Size={mapRegionPacket.Width+1}x{mapRegionPacket.Height+1}");
+                    
+                    // Ensure MapStorage is properly initialized before accessing cellLayer
+                    if (MapStorage.Instance == null)
+                    {
+                        Debug.LogError("[PacketHandler] MapStorage not available for MapRegion processing");
+                        allMapDataProcessed = false;
+                        continue;
+                    }
+
+                    if (MapStorage.Instance.cellLayer == null)
+                    {
+                        Debug.LogError("[PacketHandler] MapStorage.cellLayer is null, cannot process map region data");
+                        Debug.LogError("[PacketHandler] This suggests MapStorage.InitWorld() was never called");
+                        Debug.LogError("[PacketHandler] Check if WorldInitPacket was properly processed");
+                        allMapDataProcessed = false;
+                        continue;
+                    }
+
+                    try
+                    {
                         var layer = MapStorage.Instance.cellLayer;
                         int index = 0;
+                        int totalCells = (mapRegionPacket.Width + 1) * (mapRegionPacket.Height + 1);
+                        
+                        Debug.Log($"[PacketHandler] Writing {totalCells} cells to MapStorage starting at ({mapRegionPacket.X}, {mapRegionPacket.Y})");
+                        
                         for (int y = 0; y <= mapRegionPacket.Height; y++)
                         {
                             for (int x = 0; x <= mapRegionPacket.Width; x++)
                             {
-                                layer[mapRegionPacket.X + x, mapRegionPacket.Y + y] = mapRegionPacket.Payload[index++];
+                                if (index < mapRegionPacket.Payload.Length)
+                                {
+                                    layer[mapRegionPacket.X + x, mapRegionPacket.Y + y] = mapRegionPacket.Payload[index++];
+                                }
                             }
                         }
+                        
+                        Debug.Log($"[PacketHandler] Successfully processed MapRegionPacket #{_mapRegionPacketsReceived}");
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogError($"[PacketHandler] Error processing MapRegionPacket: {ex.Message}");
+                        Debug.LogError($"[PacketHandler] Exception details: {ex.StackTrace}");
+                        allMapDataProcessed = false;
                     }
                 }
-                
-                // Trigger world data loaded event if we received map data
-                if (hasMapData)
-                {
-                    MapManager.Instance.OnWorldDataLoaded?.Invoke();
-                }
             }
-            // Add other packet handlers here
+            
+            // Only trigger world data loaded event if we successfully processed all map data
+            // AND we have received at least one MapRegion packet
+            if (hasMapData && allMapDataProcessed)
+            {
+                Debug.Log("[PacketHandler] All map data processed successfully, triggering OnWorldDataLoaded event");
+                MapManager.Instance.OnWorldDataLoaded?.Invoke();
+            }
+            else if (hasMapData && !allMapDataProcessed)
+            {
+                Debug.LogWarning("[PacketHandler] Map data received but processing failed, not triggering OnWorldDataLoaded");
+            }
         }
 
         private void OnWorldInitialized()
         {
-            Debug.Log("PacketHandler: World initialized event received");
+            Debug.Log("[PacketHandler] World initialized event received from MapManager");
         }
 
         private void OnWorldDataLoaded()
         {
-            Debug.Log("PacketHandler: World data loaded event received");
+            Debug.Log("[PacketHandler] World data loaded event received from MapManager");
+        }
+
+        /// <summary>
+        /// Get current packet processing statistics
+        /// </summary>
+        public string GetStatistics()
+        {
+            return $"[PacketHandler Stats] Total: {_packetCount}, WorldInit: {_worldInitPacketsReceived}, MapRegion: {_mapRegionPacketsReceived}, Initialized: {_isInitialized}";
+        }
+
+        /// <summary>
+        /// Force re-initialization of the packet handler
+        /// </summary>
+        public void ForceReinitialize()
+        {
+            Debug.Log("[PacketHandler] Force reinitialization requested");
+            
+            // Clean up existing subscriptions
+            if (ConnectionManager.Instance != null)
+            {
+                ConnectionManager.Instance.OnPacketReceived -= OnPacketReceived;
+            }
+            
+            if (MapManager.Instance != null)
+            {
+                MapManager.Instance.OnWorldInitialized -= OnWorldInitialized;
+                MapManager.Instance.OnWorldDataLoaded -= OnWorldDataLoaded;
+            }
+            
+            // Reset state
+            _isInitialized = false;
+            _packetCount = 0;
+            _worldInitPacketsReceived = 0;
+            _mapRegionPacketsReceived = 0;
+            
+            // Re-initialize
+            Start();
         }
     }
 }

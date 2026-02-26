@@ -193,15 +193,6 @@ namespace Fodinae.Assets.Scripts.World
                 Debug.Log("MapStorage: Not available");
             }
 
-            if (_renderer != null)
-            {
-                _renderer.DebugInitializationStatus();
-            }
-            else
-            {
-                Debug.Log("Renderer: Not available");
-            }
-
             if (MapManager.Instance != null)
             {
                 Debug.Log($"MapManager: Available, World={MapManager.Instance.WorldDisplayName}");
