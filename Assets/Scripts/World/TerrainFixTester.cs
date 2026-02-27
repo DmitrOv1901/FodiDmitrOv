@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -8,10 +9,6 @@ using MinesServer.Networking.Server.Packets.Connection;
 
 namespace Fodinae.Assets.Scripts.World
 {
-    /// <summary>
-    /// Standalone terrain fix tester that can be run in the Unity Editor
-    /// to verify that the terrain rendering fixes are working correctly.
-    /// </summary>
     public class TerrainFixTester : MonoBehaviour
     {
         [Header("Test Configuration")]
@@ -37,15 +34,11 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        /// <summary>
-        /// Run comprehensive terrain fix test
-        /// </summary>
         public IEnumerator RunTerrainFixTest()
         {
             Debug.Log("=== TERRAIN FIX TESTER STARTED ===");
             Debug.Log("Testing terrain rendering fixes...");
 
-            // Find components
             _renderer = FindObjectOfType<WorldBackgroundRenderer>();
             _diagnosticRunner = FindObjectOfType<TerrainDiagnosticRunner>();
 
@@ -63,7 +56,6 @@ namespace Fodinae.Assets.Scripts.World
                 _diagnosticRunner = _renderer.gameObject.AddComponent<TerrainDiagnosticRunner>();
             }
 
-            // Force reinitialization if requested
             if (_forceReinitializeOnStart)
             {
                 Debug.Log("🔄 Forcing system reinitialization...");
@@ -71,7 +63,6 @@ namespace Fodinae.Assets.Scripts.World
                 yield return new WaitForSeconds(2f);
             }
 
-            // Check if we have world data
             bool hasWorldData = CheckWorldData();
 
             if (!hasWorldData && _createTestWorldIfMissing)
@@ -81,11 +72,9 @@ namespace Fodinae.Assets.Scripts.World
                 yield return new WaitForSeconds(1f);
             }
 
-            // Run diagnostics
             Debug.Log("🔍 Running terrain diagnostics...");
             yield return StartCoroutine(_diagnosticRunner.RunDiagnostics());
 
-            // Final verification
             Debug.Log("✅ Terrain fix test completed");
             Debug.Log("Check the diagnostic output above for any issues");
         }
@@ -99,10 +88,9 @@ namespace Fodinae.Assets.Scripts.World
 
             try
             {
-                // Test a few cells
                 var cell1 = MapStorage.Instance.GetCell(0, 0);
                 var cell2 = MapStorage.Instance.GetCell(10, 10);
-                
+
                 return cell1 != CellType.Unloaded && cell1 != CellType.Pregener;
             }
             catch
@@ -115,10 +103,8 @@ namespace Fodinae.Assets.Scripts.World
         {
             Debug.Log("Creating test world with dimensions 64x64...");
 
-            // Create a minimal test world
             if (MapManager.Instance != null)
             {
-                // Create a test world init packet
                 var testPacket = new WorldInitPacket
                 {
                     CodeName = "test_world",
@@ -126,12 +112,19 @@ namespace Fodinae.Assets.Scripts.World
                     Width = 64,
                     Height = 64,
                     Cells = new CellConfigurationPacket[256]
-                }; // Default configurations
+                };
 
-                // Initialize the world
+                // Provide a default configuration for cell types to prevent nullrefs
+                for (int i = 0; i < 256; i++)
+                {
+                    testPacket.Cells[i] = new CellConfigurationPacket { Color = unchecked((int)0xFFFFFFFF) };
+                }
+
                 MapManager.Instance.LoadWorldInit(testPacket);
-                
-                Debug.Log("✅ Test world created successfully");
+
+                PopulateTestWorldData();
+
+                Debug.Log("✅ Test world created successfully with populated cell data");
             }
             else
             {
@@ -139,17 +132,96 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        /// <summary>
-        /// Manual test method that can be called from the Unity Editor
-        /// </summary>
+        private void PopulateTestWorldData()
+        {
+            Debug.Log("Populating test world with terrain data...");
+
+
+            if (MapStorage.Instance == null || MapStorage.Instance.cellLayer == null)
+            {
+                Debug.LogError("❌ MapStorage cellLayer is not available!");
+                return;
+            }
+
+            int width = 64;
+            int height = 64;
+
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    CellType cellType;
+
+                    if (x == 0 || x == width - 1 || y == 0 || y == height - 1)
+                    {
+                        cellType = CellType.BuildingWall;
+                    }
+                    else if (x > 10 && x < width - 10 && y > 10 && y < height - 10)
+                    {
+                        if ((x + y) % 4 == 0)
+                        {
+                            cellType = CellType.Empty;
+                        }
+                        else if ((x + y) % 3 == 0)
+                        {
+                            cellType = CellType.FedBlock;
+                        }
+                        else
+                        {
+                            cellType = CellType.Empty;
+                        }
+                    }
+                    else
+                    {
+                        cellType = CellType.FedBlock;
+                    }
+
+                    MapStorage.Instance.cellLayer[x, y] = cellType;
+                }
+            }
+
+            Debug.Log($"✅ Populated {width*height} cells with test terrain data");
+        }
+
         public void RunManualTest()
         {
             StartCoroutine(RunTerrainFixTest());
         }
 
-        /// <summary>
-        /// Force system reinitialization
-        /// </summary>
+        public void ForceDataVerification()
+        {
+            Debug.Log("🔍 Forcing immediate data verification...");
+
+            if (MapStorage.Instance != null && MapStorage.Instance.IsReady)
+            {
+                var testCells = new[] { (0, 0), (10, 10), (30, 30), (50, 50) };
+
+                Debug.Log("Testing cell data access:");
+                foreach (var (x, y) in testCells)
+                {
+                    try
+                    {
+                        var cell = MapStorage.Instance.GetCell(x, y);
+                        Debug.Log($"   Cell ({x},{y}): {cell}");
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Debug.LogError($"   Cell ({x},{y}): ERROR - {ex.Message}");
+                    }
+                }
+
+                if (_renderer != null)
+                {
+                    Debug.Log("🔄 Forcing mesh regeneration...");
+                    _renderer.ForceInitialization();
+                }
+            }
+            else
+            {
+                Debug.LogWarning("MapStorage not ready for data verification");
+            }
+        }
+
         public void ForceReinitialize()
         {
             if (_diagnosticRunner != null)
@@ -162,9 +234,6 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        /// <summary>
-        /// Get current system status
-        /// </summary>
         public string GetSystemStatus()
         {
             var status = new System.Text.StringBuilder();

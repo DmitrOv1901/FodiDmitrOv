@@ -421,6 +421,16 @@ namespace Fodinae.Assets.Scripts.World
         /// Get texture cache statistics
         /// </summary>
         /// <returns>Cache statistics string</returns>
+        /// <summary>
+        /// Get a cached texture for a cell type
+        /// </summary>
+        /// <param name="cellType">The cell type</param>
+        /// <returns>The cached texture or null if not found</returns>
+        public Texture2D GetCachedTexture(CellType cellType)
+        {
+            return _textureCache.GetCachedTexture(cellType);
+        }
+
         public string GetCacheStats()
         {
             return _textureCache.GetCacheStats();

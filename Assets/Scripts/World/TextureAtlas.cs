@@ -209,10 +209,13 @@ namespace Fodinae.Assets.Scripts.World
         {
             if (WorldTextureManager.Instance != null)
             {
-                // Reflection hack to access private cache if needed, or rely on public API
-                // Assuming WorldTextureManager has public access or we fall back to placeholder
-                // For safety, we use the placeholder if we can't easily reach back
+                var cachedTexture = WorldTextureManager.Instance.GetCachedTexture(cellType);
+                if (cachedTexture != null)
+                {
+                    return cachedTexture;
+                }
             }
+            // Fallback to placeholder if not found or manager not available
             return CreatePlaceholderTexture(cellType);
         }
 

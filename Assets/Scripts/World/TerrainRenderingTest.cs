@@ -394,15 +394,6 @@ namespace Fodinae.Assets.Scripts.World
             yield return null;
         }
 
-        /// <summary>
-        /// Get the current renderer state for debugging
-        /// </summary>
-        public string GetRendererState()
-        {
-            if (_renderer == null) return "Null";
-            
-            return _renderer.GetDiagnosticInfo();
-        }
 
         /// <summary>
         /// Run a quick diagnostic check

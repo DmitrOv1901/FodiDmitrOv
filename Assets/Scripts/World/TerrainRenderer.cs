@@ -71,6 +71,7 @@ namespace Fodinae.Assets.Scripts.World
             }
 
             _mesh = new Mesh();
+            _mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32; // Enable 32-bit indices
             _meshFilter.mesh = _mesh;
             
             _mainCamera = Camera.main;
@@ -282,43 +283,39 @@ namespace Fodinae.Assets.Scripts.World
                 return;
             }
 
-            if (_enableBatching)
-            {
-                BatchMeshes();
-            }
-            else
-            {
-                // Use first chunk as primary mesh for simplicity
-                var firstChunk = _chunkMeshes.Values.First();
-                ApplyChunkMeshToRenderer(firstChunk);
-            }
+            BatchMeshes();
+            
+            _ = UpdateRendererMaterial();
         }
 
         private void BatchMeshes()
         {
+            if (_mainCamera == null) return;
+
             var combinedVertices = new List<Vector3>();
             var combinedTriangles = new List<int>();
             var combinedUVs = new List<Vector2>();
             var combinedAtlasIndices = new List<int>();
 
             int vertexOffset = 0;
-            int chunkCount = 0;
-
+            
+            // Camera-relative origin for centering
+            Vector3 cameraWorldPos = _mainCamera.transform.position;
+            // Snap cameraWorldPos to avoid precision issues if needed, but here we just center
+            
             foreach (var chunkMesh in _chunkMeshes.Values)
             {
-                if (chunkCount >= _maxBatchSize) break;
-
-                // Offset vertices to world position
-                var chunkOffset = new Vector3(
+                // World position of the chunk's bottom-left corner
+                var chunkWorldOrigin = new Vector3(
                     chunkMesh.ChunkPosition.x * _chunkSize * _cellSize,
                     chunkMesh.ChunkPosition.y * _chunkSize * _cellSize,
                     0
                 );
 
-                // Add vertices with offset
+                // Add vertices relative to the camera (camera is at 0 in this mesh)
                 foreach (var vertex in chunkMesh.Vertices)
                 {
-                    combinedVertices.Add(vertex + chunkOffset);
+                    combinedVertices.Add(vertex + chunkWorldOrigin - cameraWorldPos);
                 }
 
                 // Add triangles with offset
@@ -334,7 +331,6 @@ namespace Fodinae.Assets.Scripts.World
                 combinedAtlasIndices.AddRange(chunkMesh.AtlasIndices);
 
                 vertexOffset += chunkMesh.Vertices.Count;
-                chunkCount++;
             }
 
             // Apply combined mesh
@@ -343,15 +339,31 @@ namespace Fodinae.Assets.Scripts.World
             _mesh.triangles = combinedTriangles.ToArray();
             _mesh.uv = combinedUVs.ToArray();
             _mesh.RecalculateNormals();
+            
+            // Move GameObject to camera position to complete world-to-local transform
+            transform.position = cameraWorldPos;
         }
 
-        private void ApplyChunkMeshToRenderer(ChunkMesh chunkMesh)
+        private async UniTask UpdateRendererMaterial()
         {
-            _mesh.Clear();
-            _mesh.vertices = chunkMesh.Vertices.ToArray();
-            _mesh.triangles = chunkMesh.Triangles.ToArray();
-            _mesh.uv = chunkMesh.UVs.ToArray();
-            _mesh.RecalculateNormals();
+            if (_meshRenderer == null || WorldTextureManager.Instance == null) return;
+
+            // Get all atlases from the WorldTextureManager
+            var atlases = WorldTextureManager.Instance.GetAllAtlases();
+
+            if (atlases.Any())
+            {
+                var mainAtlas = atlases.First();
+                var atlasTexture = await mainAtlas.GetAtlasTexture();
+
+                if (_meshRenderer.material == null || _meshRenderer.material.shader.name != "Universal Render Pipeline/Unlit")
+                {
+                    // Use Unlit shader for terrain cells to avoid lighting issues
+                    _meshRenderer.material = new Material(Shader.Find("Universal Render Pipeline/Unlit"));
+                }
+
+                _meshRenderer.material.SetTexture("_BaseMap", atlasTexture);
+            }
         }
 
         private void OnDrawGizmosSelected()

@@ -10,8 +10,7 @@ using MinesServer.Networking.Server.Packets.Utilities;
 using MinesServer.Networking.Server.Packets.World;
 using MinesServer.Networking.Shared;
 using System;
-using System.Threading.Tasks;
-using UnityEngine; // Added UnityEngine
+using UnityEngine;
 
 namespace MinesServer.Networking.Connection.Client
 {
@@ -35,12 +34,15 @@ namespace MinesServer.Networking.Connection.Client
             _status = ConnectionStatus.Connecting;
             OnConnecting?.Invoke();
 
-            Task.Run(async () =>
-            {
-                await Task.Delay(100);
-                _status = ConnectionStatus.Connected;
-                OnConnected?.Invoke();
-            });
+            // Run asynchronously, but stay on the Unity Main Thread
+            ConnectAsync().Forget();
+        }
+
+        private async UniTaskVoid ConnectAsync()
+        {
+            await UniTask.Delay(100);
+            _status = ConnectionStatus.Connected;
+            OnConnected?.Invoke();
         }
 
         public void Disconnect()
@@ -51,12 +53,14 @@ namespace MinesServer.Networking.Connection.Client
             _status = ConnectionStatus.Disconnecting;
             OnDisconnecting?.Invoke();
 
-            Task.Run(async () =>
-            {
-                await Task.Delay(100);
-                _status = ConnectionStatus.Disconnected;
-                OnDisconnected?.Invoke();
-            });
+            DisconnectAsync().Forget();
+        }
+
+        private async UniTaskVoid DisconnectAsync()
+        {
+            await UniTask.Delay(100);
+            _status = ConnectionStatus.Disconnected;
+            OnDisconnected?.Invoke();
         }
 
         public void Dispose()
@@ -65,7 +69,7 @@ namespace MinesServer.Networking.Connection.Client
 
         public void SendAsync(ClientPacket packet)
         {
-            switch(packet.Data)
+            switch (packet.Data)
             {
                 case ClientHelloPacket clientHello:
                     // Send world initialization with proper cell configurations
@@ -81,10 +85,10 @@ namespace MinesServer.Networking.Connection.Client
                         new byte[][] {
                             new byte[] { 37, 38, 106 }
                         })));
-                    
+
                     // Send test world map data in chunks
                     SendTestWorldMapData(testWorldWidth, testWorldHeight);
-                    
+
                     // Send other initial packets
                     OnReceived?.Invoke(new ServerPacket(new PlayerInfoPacket(123, 42, "Darkar25")));
                     OnReceived?.Invoke(new ServerPacket(new AggressionStatePacket(false)));
@@ -110,7 +114,7 @@ namespace MinesServer.Networking.Connection.Client
         {
             // Create array for all possible cell types (256 max)
             var configs = new CellConfigurationPacket[256];
-            
+
             // Initialize all to default values
             for (int i = 0; i < 256; i++)
             {
@@ -123,7 +127,7 @@ namespace MinesServer.Networking.Connection.Client
                     Properties = 0
                 };
             }
-            
+
             // Configure specific cell types we use in our test map
             configs[(int)CellType.Empty] = new CellConfigurationPacket
             {
@@ -133,7 +137,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.Road] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -142,7 +146,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.Boulder1] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -151,7 +155,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.WhiteSand] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -160,7 +164,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.DarkWhiteSand] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -169,7 +173,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.GrayAcid] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -178,7 +182,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.PurpleAcid] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -187,7 +191,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             configs[(int)CellType.Lava] = new CellConfigurationPacket
             {
                 Animation = CellAnimationType.None,
@@ -196,7 +200,7 @@ namespace MinesServer.Networking.Connection.Client
                 FrameOffset = 0,
                 Properties = 0
             };
-            
+
             return configs;
         }
 
@@ -207,21 +211,21 @@ namespace MinesServer.Networking.Connection.Client
         {
             // Create test map data
             var testMap = CreateTestMapData(testWorldWidth, testWorldHeight);
-            
+
             // Send the map data in chunks (e.g., 32x32 chunks)
             const int chunkSize = 32;
-            
+
             for (int y = 0; y < testWorldHeight; y += chunkSize)
             {
                 for (int x = 0; x < testWorldWidth; x += chunkSize)
                 {
                     int chunkWidth = Math.Min(chunkSize, testWorldWidth - x);
                     int chunkHeight = Math.Min(chunkSize, testWorldHeight - y);
-                    
+
                     // Extract chunk data
                     var chunkData = new CellType[chunkWidth * chunkHeight];
                     int dataIndex = 0;
-                    
+
                     for (int cy = 0; cy < chunkHeight; cy++)
                     {
                         for (int cx = 0; cx < chunkWidth; cx++)
@@ -229,7 +233,7 @@ namespace MinesServer.Networking.Connection.Client
                             chunkData[dataIndex++] = testMap[x + cx, y + cy];
                         }
                     }
-                    
+
                     // Create and send MapRegionPacket
                     var mapRegionPacket = new MapRegionPacket
                     {
@@ -239,7 +243,7 @@ namespace MinesServer.Networking.Connection.Client
                         Height = (byte)(chunkHeight - 1),
                         Payload = chunkData
                     };
-                    
+
                     // Send as part of HBPacket
                     var hbPacket = new HBPacket(new IHBPacket[] { mapRegionPacket });
                     OnReceived?.Invoke(new ServerPacket(hbPacket));
@@ -253,7 +257,7 @@ namespace MinesServer.Networking.Connection.Client
         private CellType[,] CreateTestMapData(int width, int height)
         {
             var map = new CellType[width, height];
-            
+
             // Fill with default empty cells
             for (int y = 0; y < height; y++)
             {
@@ -262,9 +266,9 @@ namespace MinesServer.Networking.Connection.Client
                     map[x, y] = CellType.Empty;
                 }
             }
-            
+
             // Create test patterns to exercise different rendering scenarios
-            
+
             // 1. Border around the map (Road)
             for (int x = 0; x < width; x++)
             {
@@ -276,7 +280,7 @@ namespace MinesServer.Networking.Connection.Client
                 map[0, y] = CellType.Road;
                 map[width - 1, y] = CellType.Road;
             }
-            
+
             // 2. Cross pattern in the center (Boulders)
             int centerX = width / 2;
             int centerY = height / 2;
@@ -294,7 +298,7 @@ namespace MinesServer.Networking.Connection.Client
                     map[centerX, y] = CellType.Boulder1;
                 }
             }
-            
+
             // 3. Sand areas
             for (int x = 20; x < 40; x++)
             {
@@ -303,7 +307,7 @@ namespace MinesServer.Networking.Connection.Client
                     map[x, y] = CellType.WhiteSand;
                 }
             }
-            
+
             // 4. Acid pools
             for (int x = 60; x < 80; x++)
             {
@@ -312,7 +316,7 @@ namespace MinesServer.Networking.Connection.Client
                     map[x, y] = (x + y) % 2 == 0 ? CellType.GrayAcid : CellType.PurpleAcid;
                 }
             }
-            
+
             // 5. Lava area (animated)
             for (int x = 45; x < 55; x++)
             {
@@ -321,7 +325,7 @@ namespace MinesServer.Networking.Connection.Client
                     map[x, y] = CellType.Lava;
                 }
             }
-            
+
             // 6. Random noise pattern
             var random = new System.Random(12345); // Fixed seed for reproducible test data
             for (int y = 10; y < height - 10; y += 3)
@@ -334,9 +338,10 @@ namespace MinesServer.Networking.Connection.Client
                     }
                 }
             }
-            
+
             return map;
         }
+
         private async UniTaskVoid HandleAssetRequest(RuntimeAssetRequestPacket runtimeAssets)
         {
             foreach (var assetEntry in runtimeAssets.Assets)

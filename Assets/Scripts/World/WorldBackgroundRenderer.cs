@@ -6,6 +6,8 @@ using Cysharp.Threading.Tasks;
 using UnityEngine;
 using MinesServer.Data;
 using Fodinae.Assets.Scripts.Game.Managers;
+using Fodinae.Assets.Scripts.World;
+using Fodinae.Assets.Scripts.Networking.Connection;
 using UnityEngine.Rendering;
 
 namespace Fodinae.Assets.Scripts.World
@@ -17,10 +19,9 @@ namespace Fodinae.Assets.Scripts.World
         public int _chunkSize = 32;
         public int _renderDistance = 15;
         public float _cellSize = 1.0f;
-        public bool _debugMode = false;
+        public bool _debugMode = true;
 
         [Header("Background Settings")]
-        // FIX: Default Z to 0 so it appears in front of the camera (assuming 2D setup) or at least not behind the near clip
         [SerializeField] private float _backgroundZ = 0f;
         [SerializeField] private int _sortingOrder = -1000;
 
@@ -34,7 +35,6 @@ namespace Fodinae.Assets.Scripts.World
         private readonly HashSet<Vector2Int> _visibleChunks = new();
 
         private Camera _mainCamera;
-        // FIX: Initialize to impossible value so it updates on first frame
         private Vector2Int _lastCameraChunk = new Vector2Int(int.MinValue, int.MinValue);
 
         private bool _isInitialized = false;
@@ -45,7 +45,7 @@ namespace Fodinae.Assets.Scripts.World
         private enum InitializationState { Uninitialized, WaitingForWorldInit, WaitingForWorldData, ReadyForRendering, Rendering, Failed }
         private InitializationState _currentState = InitializationState.Uninitialized;
 
-        private void Awake() => Initialize();
+        void Awake() => Initialize();
 
         private void Initialize()
         {
@@ -54,7 +54,7 @@ namespace Fodinae.Assets.Scripts.World
             _meshFilter = GetComponent<MeshFilter>();
             _meshRenderer = GetComponent<MeshRenderer>();
 
-            if (_meshFilter == null || _meshRenderer == null) 
+            if (_meshFilter == null || _meshRenderer == null)
             {
                 Debug.LogError("WorldBackgroundRenderer: Missing MeshFilter or MeshRenderer component");
                 return;
@@ -81,11 +81,8 @@ namespace Fodinae.Assets.Scripts.World
 
             _isInitialized = true;
             _currentState = InitializationState.WaitingForWorldInit;
-            
-            Debug.Log("WorldBackgroundRenderer: Initialization started");
 
-            // Start legacy coroutines for fallback
-            StartCoroutine(ImmediateMapStorageCheck());
+            Debug.Log("WorldBackgroundRenderer: Initialization started");
         }
 
         private void ConfigureBackgroundRendering()
@@ -95,9 +92,12 @@ namespace Fodinae.Assets.Scripts.World
 
             _backgroundMaterial = new Material(shader);
             _backgroundMaterial.name = "WorldBackgroundMaterial";
-            
-            // Ensure proper material properties for texture rendering
+
+            // Ensure proper material properties for terrain rendering
             _backgroundMaterial.SetColor("_Color", Color.white);
+            if (_backgroundMaterial.HasProperty("_BaseColor"))
+                _backgroundMaterial.SetColor("_BaseColor", Color.white);
+
             _backgroundMaterial.SetFloat("_Surface", 0f); // Opaque
             _backgroundMaterial.SetFloat("_Cutoff", 0.5f);
             _backgroundMaterial.SetFloat("_SrcBlend", (float)UnityEngine.Rendering.BlendMode.One);
@@ -115,12 +115,11 @@ namespace Fodinae.Assets.Scripts.World
             _meshRenderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
             _meshRenderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
 
-            // FIX: Set Z position
             var pos = transform.position;
             pos.z = _backgroundZ;
             transform.position = pos;
-            
-            Debug.Log("WorldBackgroundRenderer: Material configured for texture rendering");
+
+            Debug.Log("WorldBackgroundRenderer: Material configured for terrain rendering");
         }
 
         private void Update()
@@ -153,21 +152,6 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        public void OnDrawGizmosSelected()
-        {
-            if (!_debugMode || _worldLayer == null) return;
-            Gizmos.color = Color.yellow;
-            foreach (var chunkPos in _visibleChunks)
-            {
-                var center = new Vector3(
-                    chunkPos.x * _chunkSize * _cellSize + (_chunkSize * _cellSize / 2),
-                    chunkPos.y * _chunkSize * _cellSize + (_chunkSize * _cellSize / 2),
-                    0
-                );
-                Gizmos.DrawWireCube(center, new Vector3(_chunkSize * _cellSize, _chunkSize * _cellSize, 0.1f));
-            }
-        }
-
         private void InitializeWorldLayer()
         {
             if (MapStorage.Instance?.cellLayer != null)
@@ -180,7 +164,7 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        private async void UpdateVisibleChunks()
+        private async UniTask UpdateVisibleChunks()
         {
             if (_worldLayer == null || _mainCamera == null) return;
 
@@ -243,9 +227,12 @@ namespace Fodinae.Assets.Scripts.World
                     CellType cell = CellType.Unloaded;
                     try { cell = MapStorage.Instance.GetCell(wx, wy); } catch { }
 
-                    // 4 Vertices per quad
-                    float gx = x * _cellSize;
-                    float gy = y * _cellSize;
+                    // Skip unloaded or pregener cells to avoid rendering a giant white background
+                    if (cell == CellType.Unloaded || cell == CellType.Pregener) continue;
+
+                    // Calculate vertex positions with centering
+                    float gx = x * _cellSize - (_chunkSize * _cellSize / 2f);
+                    float gy = y * _cellSize - (_chunkSize * _cellSize / 2f);
 
                     mesh.Vertices.Add(new Vector3(gx, gy, 0));
                     mesh.Vertices.Add(new Vector3(gx + _cellSize, gy, 0));
@@ -273,8 +260,11 @@ namespace Fodinae.Assets.Scripts.World
 
         private async UniTask GenerateTextures(ChunkMesh mesh)
         {
+            if (mesh.Cells.Count == 0) return;
+
             var coords = await UniTask.WhenAll(mesh.Cells.Select(c =>
                 WorldTextureManager.Instance.GetCellTextureCoordinate(c.CellType, c.WorldPosition.x, c.WorldPosition.y)));
+
 
             for (int i = 0; i < mesh.Cells.Count; i++)
             {
@@ -291,7 +281,11 @@ namespace Fodinae.Assets.Scripts.World
 
         private void UpdateMesh()
         {
-            if (_chunkMeshes.Count == 0) return;
+            if (_chunkMeshes.Count == 0)
+            {
+                _mesh.Clear();
+                return;
+            }
 
             var verts = new List<Vector3>();
             var tris = new List<int>();
@@ -311,8 +305,6 @@ namespace Fodinae.Assets.Scripts.World
             }
 
             _mesh.Clear();
-            // Use SetVertices for large lists if needed, but simple assignment works for < 65k verts. 
-            // Since we have >65k verts (131k in logs), we must set indexFormat.
             _mesh.indexFormat = IndexFormat.UInt32;
             _mesh.SetVertices(verts);
             _mesh.SetTriangles(tris, 0);
@@ -330,17 +322,23 @@ namespace Fodinae.Assets.Scripts.World
 
         private async void ApplyAtlas()
         {
-            if (_atlasTextureApplied) return;
-            
             var atlases = WorldTextureManager.Instance.GetAllAtlases();
             Debug.Log($"WorldBackgroundRenderer: Found {atlases.Count} atlas(es)");
-            
+            Debug.Log($"WorldBackgroundRenderer: Atlas count: {atlases.Count}");
+
             if (atlases.Count > 0)
             {
                 var tex = await atlases[0].GetAtlasTexture();
                 if (tex != null && _backgroundMaterial != null)
                 {
                     _backgroundMaterial.mainTexture = tex;
+
+                    // Important fix for URP unlit shaders!
+                    if (_backgroundMaterial.HasProperty("_BaseMap"))
+                    {
+                        _backgroundMaterial.SetTexture("_BaseMap", tex);
+                    }
+
                     _atlasTextureApplied = true;
                     Debug.Log($"WorldBackgroundRenderer: Atlas applied successfully. Texture size: {tex.width}x{tex.height}");
                     // Force refresh to update UVs if they changed
@@ -357,7 +355,6 @@ namespace Fodinae.Assets.Scripts.World
             }
         }
 
-        // Standard helpers
         public void ForceReinitialize() { _worldInitialized = false; Initialize(); }
         public bool IsProperlyConfigured() => _isInitialized;
         public int GetVisibleChunkCount() => _chunkMeshes.Count;
@@ -367,60 +364,10 @@ namespace Fodinae.Assets.Scripts.World
         private void OnWorldInitialized() => _currentState = InitializationState.WaitingForWorldData;
         private void OnWorldDataLoaded() { _currentState = InitializationState.ReadyForRendering; InitializeWorldLayer(); }
 
-        /// <summary>
-        /// Get detailed diagnostic information about the renderer state
-        /// </summary>
-        public string GetDiagnosticInfo()
+        internal void OnDrawGizmosSelected()
         {
-            var info = new System.Text.StringBuilder();
-            info.AppendLine("=== WorldBackgroundRenderer Diagnostic Info ===");
-            info.AppendLine($"State: {_currentState}");
-            info.AppendLine($"Initialized: {_isInitialized}");
-            info.AppendLine($"World Initialized: {_worldInitialized}");
-            info.AppendLine($"Textures Loaded: {_texturesLoaded}");
-            info.AppendLine($"Atlas Applied: {_atlasTextureApplied}");
-            info.AppendLine($"Visible Chunks: {_chunkMeshes.Count}");
-            info.AppendLine($"World Layer: {_worldLayer != null}");
-            
-            if (_backgroundMaterial != null)
-            {
-                info.AppendLine($"Material: {_backgroundMaterial.name}");
-                info.AppendLine($"Main Texture: {_backgroundMaterial.mainTexture?.name ?? "None"}");
-                info.AppendLine($"Texture Size: {_backgroundMaterial.mainTexture?.width ?? 0}x{_backgroundMaterial.mainTexture?.height ?? 0}");
-            }
-            else
-            {
-                info.AppendLine("Material: Null");
-            }
-            
-            if (WorldTextureManager.Instance != null)
-            {
-                info.AppendLine($"Texture Manager: Available");
-                info.AppendLine($"Atlas Count: {WorldTextureManager.Instance.GetAllAtlases().Count}");
-            }
-            else
-            {
-                info.AppendLine("Texture Manager: Not Available");
-            }
-            
-            if (MapStorage.Instance != null)
-            {
-                info.AppendLine($"MapStorage: Ready = {MapStorage.Instance.IsReady}");
-            }
-            else
-            {
-                info.AppendLine("MapStorage: Not Available");
-            }
-            
-            return info.ToString();
+            throw new NotImplementedException();
         }
-
-        // Stub for existing coroutine reference
-        private System.Collections.IEnumerator ImmediateMapStorageCheck() { yield break; }
-        private System.Collections.IEnumerator AggressiveFallbackInitialization() { yield break; }
-        private System.Collections.IEnumerator PeriodicInitializationCheck() { yield break; }
-        private System.Collections.IEnumerator CheckStandaloneInitialization() { yield break; }
-        private void TryEmergencyInitialization() { }
 
         private class CellInfo { public Vector2Int LocalPosition, WorldPosition; public CellType CellType; public int VertexStartIndex; }
         private class ChunkMesh
