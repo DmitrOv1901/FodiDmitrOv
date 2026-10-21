@@ -14,6 +14,9 @@ public sealed class WindowCommandStream
 
     public event Action<ModalWindowPacket>? ModalRequested;
 
+    /// <summary>Живое обновление элемента окна (WindowUpdatePacket по "UI.Id").</summary>
+    public event Action<WindowUpdatePacket>? ElementUpdateRequested;
+
     public event Action<bool>? OpenWindowVisibilityChanged;
 
     public bool HasOpenWindows { get; private set; }
@@ -35,6 +38,8 @@ public sealed class WindowCommandStream
     public void PublishCloseWindow(CloseWindowPacket packet) => CloseRequested?.Invoke(packet);
 
     public void PublishModalWindow(ModalWindowPacket packet) => ModalRequested?.Invoke(packet);
+
+    public void PublishElementUpdate(WindowUpdatePacket packet) => ElementUpdateRequested?.Invoke(packet);
 
     public void SetServerWindowVisibility(bool visible)
     {

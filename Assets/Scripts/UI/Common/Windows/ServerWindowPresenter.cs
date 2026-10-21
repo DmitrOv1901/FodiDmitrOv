@@ -24,6 +24,12 @@ namespace Kern.UI;
 
 public sealed class ServerWindowPresenter : IDisposable
 {
+    /// <summary>
+    /// Пол авто-высоты каркаса: страница без контента (подтверждение «Да/Нет»)
+    /// не должна схлопываться в узкую полоску — окно остаётся читаемым.
+    /// </summary>
+    private const float AutoHeightFloor = 240f;
+
     private static readonly Regex s_canvasImagePattern = new(
         @"^(?<x>-?\d+x)?(?<y>-?\d+y)?(?<h>\d+h)?(?<w>\d+w)=I#(?<uri>.+)$",
         RegexOptions.CultureInvariant);
@@ -36,7 +42,8 @@ public sealed class ServerWindowPresenter : IDisposable
     private readonly UIDocument _document;
     private readonly WindowCommandStream _commands;
     private readonly ModalWindowHandler _modalWindowHandler;
-    private readonly List<(string Tag, VisualElement Root, WindowBinding Binding)> _openWindows = [];
+    private readonly IItemCatalog _itemCatalog;
+    private readonly List<WindowState> _openWindows = [];
 
     public ServerWindowPresenter(
         IAssetLoader assetLoader,
@@ -45,7 +52,8 @@ public sealed class ServerWindowPresenter : IDisposable
         UIDocument document,
         WindowCommandStream commands,
         IAsyncOperationSupervisor operations,
-        IWebAssetLoader webAssetLoader)
+        IWebAssetLoader webAssetLoader,
+        IItemCatalog itemCatalog)
     {
         _assetLoader = assetLoader;
         _operations = operations;
@@ -54,10 +62,16 @@ public sealed class ServerWindowPresenter : IDisposable
         _networkService = networkService;
         _document = document;
         _commands = commands;
+        _itemCatalog = itemCatalog;
         _modalWindowHandler = new ModalWindowHandler(document, uiInputManager);
         _commands.OpenRequested += Open;
         _commands.CloseRequested += Close;
         _commands.ModalRequested += ShowModal;
+        _commands.ElementUpdateRequested += ApplyElementUpdate;
+
+        // Первое окно не платит за разовую инициализацию движка шаблонов
+        // (репорт: первое открытие маркета — 3.2 с в биндинге, далее 1 мс).
+        WindowBinding.WarmUpInBackground(operations);
     }
 
     public bool HasOpenWindows => _openWindows.Count > 0;
@@ -65,6 +79,33 @@ public sealed class ServerWindowPresenter : IDisposable
     public string? TopWindowTag => _openWindows.Count > 0 ? _openWindows[^1].Tag : null;
 
     public bool IsModalShowing => _modalWindowHandler.IsShowing;
+
+    /// <summary>
+    /// ESC: легаси-окна не имеют серверного действия «закрыть по ESC» —
+    /// единственный закрывающий элемент окна это кнопка «ВЫЙТИ» (LegacyWindow
+    /// вешает на неё close), поэтому ESC шлёт клик по её индексу. Если кнопки
+    /// в окне нет, ESC поглощается: клик по случайному элементу (первая
+    /// вкладка) хуже бездействия.
+    /// </summary>
+    public bool TryRequestCloseTopWindow()
+    {
+        if (_openWindows.Count == 0)
+        {
+            return false;
+        }
+
+        WindowState state = _openWindows[^1];
+        for (int index = state.ClickableOrder.Count - 1; index >= 0; index--)
+        {
+            if (TextPacketBuilder.IsExitButton(state.ClickableOrder[index]))
+            {
+                _networkService.Send(new ElementClickPacket(state.Tag, index, []));
+                return true;
+            }
+        }
+
+        return true;
+    }
 
     /// <summary>
     /// Закрыть серверное окно. Вызывается из PauseMenu: он владеет Escape в
@@ -78,16 +119,17 @@ public sealed class ServerWindowPresenter : IDisposable
         _commands.OpenRequested -= Open;
         _commands.CloseRequested -= Close;
         _commands.ModalRequested -= ShowModal;
+        _commands.ElementUpdateRequested -= ApplyElementUpdate;
 
         // Оверлей тоже убирается. Панель документа переживает сцену, и оставшийся
         // элемент копился между входами в игру: новый обработчик создавал второй,
         // а поиск по классу отдавал старый, скрытый. Плюс Dispose снимает
         // подписку на планировщик.
         _modalWindowHandler.Dispose();
-        foreach ((_, VisualElement root, WindowBinding binding) in _openWindows)
+        foreach (WindowState state in _openWindows)
         {
-            binding.Dispose();
-            root.RemoveFromHierarchy();
+            state.Binding.Dispose();
+            state.Overlay.RemoveFromHierarchy();
         }
 
         _openWindows.Clear();
@@ -116,6 +158,7 @@ public sealed class ServerWindowPresenter : IDisposable
             packet = ExpandSerializedRows(packet);
         }
 
+        packet = PromoteTabStrip(packet);
         ValidateWindowPacket(packet);
 
         // UIDocument може бути вимкненим (BypassGameUI). Серверне вікно потребує
@@ -130,25 +173,194 @@ public sealed class ServerWindowPresenter : IDisposable
         VisualElement frame = new();
         frame.AddToClassList("packet-window-frame");
         frame.style.width = packet.Width;
-        frame.style.height = packet.Height;
-        VisualElement packetRoot = new PacketUIBuilder(_assetLoader, _operations, _webAssetLoader).Build(packet.Content);
-        packetRoot.AddToClassList("packet-window-content");
-        frame.Add(packetRoot);
-        element.Add(frame);
-        var binding = new WindowBinding();
-        binding.Bind(packetRoot);
-        var packetOrder = new List<IGUIComponentPacket>();
-        CollectPacketOrder(packet.Content, packetOrder);
-        RegisterClickableElements(packetRoot, packetRoot, packet.WindowTag, packetOrder, actionTagWindow);
-        if (actionTagWindow)
+
+        // Высота каркаса по содержимому (мост ставит PacketUI.AutoSizeHeight
+        // на корень каждого легаси-окна): точную высоту рендера знает только
+        // клиент — шрифты, переносы, размеры иконок. Каркас обнимает контент
+        // в границах: пол (AutoHeightFloor) не даёт крошечным страницам
+        // («Да/Нет» подтверждения) схлопываться, потолок — Height из пакета
+        // и 96% экрана (max-height в .packet-window-frame); за потолком
+        // начинается прокрутка.
+        if (AttachedProperties.Has(packet.Content, "PacketUI.AutoSizeHeight"))
         {
-            AddExitCloseButton(frame, packetOrder);
+            frame.style.height = StyleKeyword.Auto;
+            frame.style.minHeight = AutoHeightFloor;
+            frame.style.maxHeight = packet.Height;
+        }
+        else
+        {
+            frame.style.height = packet.Height;
         }
 
+        element.Add(frame);
+        var state = new WindowState
+        {
+            Tag = packet.WindowTag,
+            Overlay = element,
+            Frame = frame,
+            Binding = new WindowBinding(),
+            Tree = packet.Content,
+            ActionTagWindow = actionTagWindow,
+        };
+
+        // Временный замер этапов (репорт: маркет сильно лагает при заходе).
+        // Лог показывает, какой именно этап съедает время: сборка дерева,
+        // биндинг живых шаблонов или регистрация кликабельных.
+        var openWatch = System.Diagnostics.Stopwatch.StartNew();
+        BuildWindowContent(state);
+        long buildMs = openWatch.ElapsedMilliseconds;
+        int elementCount = 0;
+        CountTree(element);
+        void CountTree(VisualElement e)
+        {
+            elementCount++;
+            foreach (VisualElement child in e.Children())
+            {
+                CountTree(child);
+            }
+        }
+
+        // Легаси-GUI — одно окно на игрока: сервер переотрисовывает его на
+        // КАЖДОЕ действие (вход, таб, кнопка), раздавая каждого рендеру новый
+        // уникальный тег (ProtocolWindow.MakeTag). Поэтому заменяем по тегу
+        // нельзя — новый рендер закрывает ВСЕ прежние легаси-окна. Без этого
+        // копии окон накапливаются в иерархии весь сеанс: каждая остаётся в
+        // layout и модальном стеке под новой, и лаги растут с каждым кликом
+        // (репорт: маркет сильно лагает при заходе).
+        foreach (WindowState old in _openWindows)
+        {
+            old.Binding.Dispose();
+            _uiInputManager.PopModal(old.Overlay);
+            old.Overlay.RemoveFromHierarchy();
+        }
+
+        _openWindows.Clear();
         _document.rootVisualElement.Add(element);
         _uiInputManager.PushModal(element);
-        _openWindows.Add((packet.WindowTag, element, binding));
+        _openWindows.Add(state);
         _commands.SetServerWindowVisibility(true);
+        Debug.Log($"[PacketUI] Открыто окно '{packet.WindowTag}' ({packet.Width}x{packet.Height}): " +
+            $"элементов {elementCount}; сборка и биндинг {buildMs} мс.");
+    }
+
+    /// <summary>
+    /// Контент окна: сборка дерева из пакета, биндинг живых шаблонов,
+    /// регистрация кликабельных, крестик. Вызывается при открытии и при
+    /// живом обновлении элемента — и там, и там окно строится с нуля из
+    /// актуального дерева, так что индексы кликабельных и обработчики
+    /// остаются согласованными между собой.
+    /// </summary>
+    private void BuildWindowContent(WindowState state)
+    {
+        state.Frame.Clear();
+        VisualElement packetRoot = new PacketUIBuilder(_assetLoader, _operations, _webAssetLoader, _itemCatalog).Build(state.Tree);
+        packetRoot.AddToClassList("packet-window-content");
+        state.Frame.Add(packetRoot);
+        state.Binding.Bind(packetRoot);
+        state.ClickableOrder = CollectClickableOrder(state.Tree);
+        RegisterClickableElements(packetRoot, packetRoot, state);
+        AddExitCloseButton(state.Frame, state.Tag, state.ClickableOrder);
+    }
+
+    /// <summary>
+    /// Живое обновление элемента (WindowUpdatePacket по "UI.Id"): в сохранённом
+    /// дереве пакета элемент заменяется присланным компонентом, после чего
+    /// контент окна пересобирается. Пересборка, а не точечная подмена: клик
+    /// легаси-элементов адресуется индексом в pre-order списке кликабельных,
+    /// и подмена поддерева сдвинула бы индексы у всех, кто стоит дальше.
+    /// </summary>
+    private void ApplyElementUpdate(WindowUpdatePacket packet)
+    {
+        WindowState? state = FindByTag(packet.WindowTag);
+        if (state == null)
+        {
+            Debug.LogWarning($"[PacketUI] WindowUpdate for unknown window '{packet.WindowTag}'.");
+            return;
+        }
+
+        IGUIComponentPacket? updated = ReplaceByElementId(state.Tree, packet.ElementId, packet.Component);
+        if (updated == null)
+        {
+            Debug.LogWarning($"[PacketUI] WindowUpdate: element {packet.ElementId} not found " +
+                $"in window '{packet.WindowTag}'.");
+            return;
+        }
+
+        state.Tree = updated;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        BuildWindowContent(state);
+        Debug.Log($"[PacketUI] Окно '{state.Tag}': элемент {packet.ElementId} обновлён " +
+            $"({packet.Component.GetType().Name}), пересборка {watch.ElapsedMilliseconds} мс.");
+    }
+
+    /// <summary>
+    /// Поиск в дереве компонента с attached-свойством "UI.Id" и его замена.
+    /// Возвращает новое дерево (заменённые контейнеры клонируются through with),
+    /// null — элемента с таким id в дереве нет. Совпадение с корнем возвращает
+    /// replacement — он становится новым корнем окна.
+    /// </summary>
+    private static IGUIComponentPacket? ReplaceByElementId(
+        IGUIComponentPacket node,
+        uint elementId,
+        IGUIComponentPacket replacement)
+    {
+        string? own = AttachedProperties.Find(node, "UI.Id");
+        if (uint.TryParse(own, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint parsed) &&
+            parsed == elementId)
+        {
+            return replacement;
+        }
+
+        if (node is not ContainerComponentPacket container)
+        {
+            return null;
+        }
+
+        for (int index = 0; index < container.Children.Count; index++)
+        {
+            IGUIComponentPacket? replaced = ReplaceByElementId(container.Children[index], elementId, replacement);
+            if (replaced == null)
+            {
+                continue;
+            }
+
+            var children = new List<IGUIComponentPacket>(container.Children) { [index] = replaced };
+            return container with { Children = children };
+        }
+
+        return null;
+    }
+
+    private WindowState? FindByTag(string tag)
+    {
+        for (int index = _openWindows.Count - 1; index >= 0; index--)
+        {
+            if (_openWindows[index].Tag == tag)
+            {
+                return _openWindows[index];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Открытое серверное окно: визуальное дерево, биндинг и данные, по которым
+    /// живут клики и обновления. Tree — обработанное дерево пакета (после
+    /// ExpandSerializedRows/PromoteTabStrip): из него контент пересобирается
+    /// при WindowUpdatePacket.
+    /// </summary>
+    private sealed class WindowState
+    {
+        public required string Tag { get; init; }
+        public required VisualElement Overlay { get; init; }
+        public required VisualElement Frame { get; init; }
+        public required WindowBinding Binding { get; init; }
+        public required IGUIComponentPacket Tree { get; set; }
+        public required bool ActionTagWindow { get; init; }
+
+        /// <summary>Пересчитывается при каждой сборке контента (см. CollectClickableOrder).</summary>
+        public List<IGUIComponentPacket> ClickableOrder { get; set; } = [];
     }
 
     private static OpenWindowPacket ExpandSerializedRows(OpenWindowPacket packet)
@@ -231,6 +443,117 @@ public sealed class ServerWindowPresenter : IDisposable
         }
 
         return packet with { Content = scroll with { Children = children } };
+    }
+
+    /// <summary>
+    /// Полоса вкладок легаси-окна. Мост LegacyWindow кладёт контейнер вкладок
+    /// в дерево сразу за заголовком (заголовок → вкладки → текст → входы →
+    /// кнопки → списки), дети — TextPacket: активная вкладка без OnClickContext,
+    /// кликабельные с контекстом. Меток PacketUI.Tab* мост больше не ставит,
+    /// поэтому горизонтальный DockPanel-ряд из вкладок собираем сами — на
+    /// контрактной позиции. Экземпляры вкладок сохраняются (with-клоны с
+    /// дочерпнутыми свойствами), поэтому кликабельные индексы не сдвигаются.
+    /// </summary>
+    private static OpenWindowPacket PromoteTabStrip(OpenWindowPacket packet)
+    {
+        if (packet.Content is not ScrollViewerPacket root)
+        {
+            return packet;
+        }
+
+        // Заголовок окна — первый некликабельный TextPacket: помечается
+        // PacketUI.Title (стиль заголовка, центр) — новый мост меток не ставит.
+        var children = new List<IGUIComponentPacket>(root.Children);
+        if (children.Count > 0 &&
+            children[0] is TextPacket titleCandidate &&
+            string.IsNullOrEmpty(titleCandidate.OnClickContext) &&
+            !AttachedProperties.Has(titleCandidate, "PacketUI.Title"))
+        {
+            children[0] = titleCandidate with
+            {
+                AttachedProperties =
+                [
+                    .. titleCandidate.AttachedProperties,
+                    new StringPairPacket("PacketUI.Title", "1"),
+                ],
+            };
+        }
+
+        // Вкладки стоят на позиции 0 (без заголовка) или 1 (за заголовком).
+        // Заголовок — некликабельный TextPacket в начале; тело страницы тоже
+        // некликабельный TextPacket, но оно стоит уже после вкладок, так что
+        // на позицию 0/1 оно не попадает.
+        int tabIndex = 0;
+        if (children.Count > 0 &&
+            children[0] is TextPacket first &&
+            string.IsNullOrEmpty(first.OnClickContext))
+        {
+            tabIndex = 1;
+        }
+
+        if (tabIndex >= children.Count ||
+            children[tabIndex] is not ScrollViewerPacket container ||
+            container.Children.Count == 0)
+        {
+            return packet with { Content = root with { Children = children } };
+        }
+
+        // Контейнер кнопок тоже состоит из TextPacket и стоит близко к началу.
+        // Отличаем по кнопке «ВЫЙТИ»: мост добавляет её в кнопки всегда, а во
+        // вкладках метки-переключателя быть не может.
+        bool allText = true;
+        bool anyClickable = false;
+        bool hasExit = false;
+        foreach (IGUIComponentPacket child in container.Children)
+        {
+            if (child is not TextPacket tab)
+            {
+                allText = false;
+                break;
+            }
+
+            if (!string.IsNullOrEmpty(tab.OnClickContext))
+            {
+                anyClickable = true;
+            }
+
+            if (TextPacketBuilder.IsExitButton(tab))
+            {
+                hasExit = true;
+            }
+        }
+
+        if (!allText || !anyClickable || hasExit)
+        {
+            return packet;
+        }
+
+        var tabs = new List<IGUIComponentPacket>(container.Children.Count);
+        foreach (IGUIComponentPacket child in container.Children)
+        {
+            var tab = (TextPacket)child;
+            string marker = string.IsNullOrEmpty(tab.OnClickContext)
+                ? "PacketUI.TabActive"
+                : "PacketUI.TabAction";
+            tabs.Add(tab with
+            {
+                AttachedProperties =
+                [
+                    .. tab.AttachedProperties,
+                    new StringPairPacket(marker, "1"),
+                    new StringPairPacket("DockPanel.Dock", "Left"),
+                ],
+            });
+        }
+
+        var strip = new DockPanelPacket
+        {
+            Children = tabs,
+            AttachedProperties = [new StringPairPacket("DockPanel.Dock", "Top")],
+        };
+
+        children[tabIndex] = strip;
+        return packet with { Content = root with { Children = children } };
     }
 
     // Вкладка легаси-окна — TextPacket с маркером моста ProtocolWindow.
@@ -435,10 +758,10 @@ public sealed class ServerWindowPresenter : IDisposable
             return;
         }
 
-        (_, VisualElement root, WindowBinding binding) = _openWindows[^1];
-        binding.Dispose();
-        _uiInputManager.PopModal(root);
-        root.RemoveFromHierarchy();
+        WindowState state = _openWindows[^1];
+        state.Binding.Dispose();
+        _uiInputManager.PopModal(state.Overlay);
+        state.Overlay.RemoveFromHierarchy();
         _openWindows.RemoveAt(_openWindows.Count - 1);
         _commands.SetServerWindowVisibility(HasOpenWindows);
     }
@@ -448,59 +771,42 @@ public sealed class ServerWindowPresenter : IDisposable
         _modalWindowHandler.Show(packet);
     }
 
-    private static void CollectPacketOrder(
-        IGUIComponentPacket packet,
-        List<IGUIComponentPacket> order)
+    /// <summary>
+    /// Pre-order обход дерева пакета, собирающий только кликабельные элементы.
+    /// Сервер адресует клики индексом в таком же списке (GuiWindowModel.Clickables),
+    /// поэтому индекс элемента — это номер в этом порядке, а не позиция в дереве:
+    /// контейнеры и некликабельные тексты индексы не получают.
+    /// </summary>
+    private static List<IGUIComponentPacket> CollectClickableOrder(IGUIComponentPacket packet)
     {
-        order.Add(packet);
-        if (packet is IContainerComponentPacket container)
+        var order = new List<IGUIComponentPacket>();
+        Walk(packet);
+        return order;
+
+        void Walk(IGUIComponentPacket current)
         {
-            foreach (IGUIComponentPacket child in container.Children)
+            if (!string.IsNullOrEmpty(current.OnClickContext))
             {
-                CollectPacketOrder(child, order);
+                order.Add(current);
+            }
+
+            if (current is IContainerComponentPacket container)
+            {
+                foreach (IGUIComponentPacket child in container.Children)
+                {
+                    Walk(child);
+                }
             }
         }
     }
 
-    private void RegisterClickableElements(
-        VisualElement element,
-        VisualElement windowRoot,
-        string windowTag,
-        IReadOnlyList<IGUIComponentPacket> packetOrder,
-        bool actionTagWindow)
-    {
-        if (element.userData is IGUIComponentPacket componentPacket &&
-            !string.IsNullOrEmpty(componentPacket.OnClickContext))
-        {
-            int elementIndex = PacketIndex(packetOrder, componentPacket);
-            if (elementIndex < 0)
-            {
-                string message = $"[PacketUI] Clickable component {componentPacket.GetType().Name} " +
-                    $"is missing from packet tree for window '{windowTag}'.";
-                Debug.LogError(message);
-                throw new InvalidOperationException(message);
-            }
-
-            element.RegisterCallback<ClickEvent>(click =>
-            {
-                click.StopPropagation();
-                HandleElementClick(element, windowRoot, elementIndex, windowTag, actionTagWindow);
-            });
-        }
-
-        foreach (VisualElement child in element.Children())
-        {
-            RegisterClickableElements(child, windowRoot, windowTag, packetOrder, actionTagWindow);
-        }
-    }
-
-    private static int PacketIndex(
-        IReadOnlyList<IGUIComponentPacket> packetOrder,
+    private static int ClickableIndexOf(
+        List<IGUIComponentPacket> clickableOrder,
         IGUIComponentPacket target)
     {
-        for (int index = 0; index < packetOrder.Count; index++)
+        for (int index = 0; index < clickableOrder.Count; index++)
         {
-            if (ReferenceEquals(packetOrder[index], target))
+            if (ReferenceEquals(clickableOrder[index], target))
             {
                 return index;
             }
@@ -509,27 +815,59 @@ public sealed class ServerWindowPresenter : IDisposable
         return -1;
     }
 
+    private void RegisterClickableElements(VisualElement element, VisualElement windowRoot, WindowState state)
+    {
+        if (element.userData is IGUIComponentPacket componentPacket &&
+            !string.IsNullOrEmpty(componentPacket.OnClickContext))
+        {
+            int elementIndex = ClickableIndexOf(state.ClickableOrder, componentPacket);
+            if (elementIndex < 0)
+            {
+                string message = $"[PacketUI] Clickable component {componentPacket.GetType().Name} " +
+                    $"is missing from packet tree for window '{state.Tag}'.";
+                Debug.LogError(message);
+                throw new InvalidOperationException(message);
+            }
+
+            element.RegisterCallback<ClickEvent>(click =>
+            {
+                click.StopPropagation();
+                HandleElementClick(element, windowRoot, elementIndex, state);
+            });
+        }
+
+        foreach (VisualElement child in element.Children())
+        {
+            RegisterClickableElements(child, windowRoot, state);
+        }
+    }
+
     /// <summary>
-    /// Белый крестик в правом верхнем углу рамки — замена футерной кнопки
-    /// «ВЫЙТИ». Клик отправляет ровно тот же ElementClickPacket, что и
-    /// убранная кнопка: окно, как и раньше, закрывает сервер. Индекс
-    /// элемента считается по packetOrder, поэтому контракт с сервером
-    /// не меняется.
+    /// Белый крестик в правом верхнем углу рамки — замена кнопки «ВЫЙТИ»
+    /// (старый путь: маркер PacketUI.ExitAction; новый мост: текст «ВЫЙТИ»,
+    /// см. TextPacketBuilder.IsExitButton). Клик адресуется как у остальных
+    /// элементов — по тегу окна и индексу кликабельного: сервер закрывает
+    /// окно сам (close из Session.SendWin) после проверки OwnsTag. OnClickContext
+    /// кнопки «ВЫЙТИ» в поле тега подставлять нельзя: в новом мосте это путь
+    /// сбора инпутов («.», «/n»), а не тег — такие клики сервер отбрасывал
+    /// как stale window tag, и крестик не работал.
     /// </summary>
     private void AddExitCloseButton(
         VisualElement frame,
-        IReadOnlyList<IGUIComponentPacket> packetOrder)
+        string windowTag,
+        List<IGUIComponentPacket> clickableOrder)
     {
-        foreach (IGUIComponentPacket candidate in packetOrder)
+        for (int elementIndex = 0; elementIndex < clickableOrder.Count; elementIndex++)
         {
-            if (candidate is not TextPacket exit ||
-                !AttachedProperties.Has(exit, "PacketUI.ExitAction") ||
-                string.IsNullOrEmpty(exit.OnClickContext))
+            if (clickableOrder[elementIndex] is not TextPacket exit ||
+                string.IsNullOrEmpty(exit.OnClickContext) ||
+                (!AttachedProperties.Has(exit, "PacketUI.ExitAction") &&
+                 !TextPacketBuilder.IsExitButton(exit)))
             {
                 continue;
             }
 
-            var closeButton = new Button { name = "PacketWindowClose" };
+            var closeButton = new Button { name = "PacketWindowClose", tooltip = "Закрыть" };
             closeButton.AddToClassList("packet-window-close");
             closeButton.focusable = false;
 
@@ -544,10 +882,8 @@ public sealed class ServerWindowPresenter : IDisposable
             closeBarB.AddToClassList("packet-window-close-bar--b");
             closeButton.Add(closeBarB);
 
-            int elementIndex = PacketIndex(packetOrder, exit);
-            string clickContext = exit.OnClickContext;
             closeButton.clicked += () => _networkService.Send(
-                new ElementClickPacket(clickContext, elementIndex, []));
+                new ElementClickPacket(windowTag, elementIndex, []));
             frame.Add(closeButton);
             return;
         }
@@ -557,23 +893,29 @@ public sealed class ServerWindowPresenter : IDisposable
         VisualElement clickedElement,
         VisualElement windowRoot,
         int elementIndex,
-        string windowTag,
-        bool actionTagWindow)
+        WindowState state)
     {
         if (clickedElement.userData is not IGUIComponentPacket componentPacket)
         {
-            string message = $"[PacketUI] Clicked element {elementIndex} in window '{windowTag}' " +
+            string message = $"[PacketUI] Clicked element {elementIndex} in window '{state.Tag}' " +
                 "has no GUI component packet.";
             Debug.LogError(message);
             throw new InvalidOperationException(message);
         }
 
-        if (actionTagWindow)
+        if (state.ActionTagWindow)
         {
+            // Легаси-окна (мост ProtocolWindow): action кнопки живёт в OnClickContext,
+            // а значения инпутов окна (слайдеры crys0..crys5, поле "input") собираем
+            // со всего окна и отправляем в Context — сервер подставляет их в макросы
+            // %M%/%I% action-строки (ProtocolWindow.SubstituteActionMacros) до
+            // диспетчеризации. Без значений кнопки типа «Продать:%M%» умирают
+            // в long.Parse("%M%") на сервере.
+            StringPairPacket[] windowInputValues = ClickContextResolver.CollectInputValues(windowRoot);
             _networkService.Send(new ElementClickPacket(
                 componentPacket.OnClickContext,
                 elementIndex,
-                []));
+                windowInputValues));
             return;
         }
 
@@ -585,12 +927,12 @@ public sealed class ServerWindowPresenter : IDisposable
         {
             string message = $"[PacketUI] Invalid OnClickContext '{componentPacket.OnClickContext}' " +
                 $"for component {elementIndex} ({componentPacket.GetType().Name}) " +
-                $"in window '{windowTag}'.";
+                $"in window '{state.Tag}'.";
             Debug.LogError(message);
             throw new InvalidOperationException(message);
         }
 
         StringPairPacket[] inputValues = ClickContextResolver.CollectInputValues(inputRoot);
-        _networkService.Send(new ElementClickPacket(windowTag, elementIndex, inputValues));
+        _networkService.Send(new ElementClickPacket(state.Tag, elementIndex, inputValues));
     }
 }

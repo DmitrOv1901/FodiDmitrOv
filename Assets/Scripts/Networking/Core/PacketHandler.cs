@@ -134,6 +134,7 @@ public sealed class PacketHandler(
         On<MovementSpeedPacket>(_playerInfo.Process);
         On<OpenWindowPacket>(_windowProcessor.Process);
         On<CloseWindowPacket>(_windowProcessor.Process);
+        On<WindowUpdatePacket>(_windowProcessor.Process);
         On<RobotPositionPacket>(_playerInfo.Process);
         On<MapRegionPacket>(_mapRegion.Process);
         On<BuildingPacket>(_building.Process);

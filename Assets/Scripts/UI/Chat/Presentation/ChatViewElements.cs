@@ -28,6 +28,10 @@ internal sealed class ChatViewElements
 
     public VisualElement? ColorGrid { get; }
 
+    public Button? EmojiButton { get; }
+
+    public VisualElement? EmojiGrid { get; }
+
     public Controls.ChatInputBlinker? Blinker { get; }
 
     public ChatViewElements(VisualElement tree, ILocalizationService? loc)
@@ -55,6 +59,8 @@ internal sealed class ChatViewElements
         SendButton = tree.Q<Button>("SendButton");
         ColorButton = tree.Q<Button>("ColorButton");
         ColorGrid = tree.Q<VisualElement>("ColorGrid");
+        EmojiButton = tree.Q<Button>("EmojiButton");
+        EmojiGrid = tree.Q<VisualElement>("EmojiGrid");
 
         var internalInput = InputField != null
             ? InputField.Q<VisualElement>(className: "unity-text-field__input")

@@ -8,6 +8,8 @@ public sealed class RespawnStation : PackBuilding
 {
     public override BuildingType Type => BuildingType.Resp;
 
+    public override UnityEngine.Vector2 RoofCenterOffsetCells => new(0f, 0.5775f);
+
     public override IEnumerable<((int X, int Y) Pos, CellType Cell)> CellsToPlace()
     {
         yield return ((0, 0), CellType.BuildingDoor);

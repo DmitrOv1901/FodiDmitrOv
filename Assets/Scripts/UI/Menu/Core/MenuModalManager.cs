@@ -36,7 +36,17 @@ public sealed class MenuModalManager
     private Button? _serverItemDummy;
     private Button? _confirmServerButton;
 
+    /// <summary>
+    /// Выбран реальный сервер (не Dummy-песочница). MainMenu по этому флагу
+    /// решает, можно ли накатывать на карточку данные опроса статуса —
+    /// у песочницы своих живых данных нет.
+    /// </summary>
+    public bool IsRealServerSelected { get; private set; } = true;
+
     public bool HasActiveModal => _activeModal != null;
+
+    /// <summary>Окно «Диагностика и целостность файлов» открыто: живой лог может запустить проверку.</summary>
+    public event Action? RepairModalOpened;
 
     public void Bind(VisualElement tree)
     {
@@ -129,11 +139,12 @@ public sealed class MenuModalManager
             _serverItemHades.clicked += () =>
             {
                 SelectServer(_serverItemHades);
-                if (srvTitle != null) srvTitle.text = "HADES-ALPHA";
+                IsRealServerSelected = true;
+                // Глубину, пинг и имя карточки пишет опрос статуса (MainMenu,
+                // api/status/online) — здесь их не трогаем, чтобы не сбрасывать
+                // живые данные захардкоженными. Сид и опасность статичны.
                 if (srvDesc != null) srvDesc.text = loc?.Get("server.hades.desc") ?? "HADES-ALPHA";
-                if (srvDepth != null) srvDepth.text = "-2480m";
                 if (srvSeed != null) srvSeed.text = "#849201";
-                if (srvPing != null) srvPing.text = "32 ms";
                 if (srvHazard != null) srvHazard.text = loc?.Get("server.hazard.high") ?? "High";
                 clientConfig?.UpdateAndSave(cfg =>
                 {
@@ -149,6 +160,7 @@ public sealed class MenuModalManager
             _serverItemDummy.clicked += () =>
             {
                 SelectServer(_serverItemDummy);
+                IsRealServerSelected = false;
                 if (srvTitle != null) srvTitle.text = "DUMMY OFFLINE";
                 if (srvDesc != null) srvDesc.text = loc?.Get("server.dummy.desc") ?? "Offline Sandbox";
                 if (srvDepth != null) srvDepth.text = "-100m";
@@ -204,21 +216,11 @@ public sealed class MenuModalManager
             };
         }
 
-        var confirmUpdateBtn = tree.Q<Button>("ConfirmUpdateButton");
-        var updateBlock = tree.Q<VisualElement>("UpdateProgressBlock");
-        var updateFill = tree.Q<VisualElement>("UpdateProgressFill");
-        var updatePercent = tree.Q<Label>("UpdateProgressPercent");
-        if (confirmUpdateBtn != null)
-        {
-            confirmUpdateBtn.clicked += () =>
-            {
-                UIState.Show(updateBlock);
-                if (updateFill != null) updateFill.style.width = new Length(100, LengthUnit.Percent);
-                if (updatePercent != null) updatePercent.text = "100%";
-                CloseCurrentModal();
-                onPlay();
-            };
-        }
+        // Реальное поведение кнопки подтверждения обновления (скачивание с
+        // прогрессом и перезапуск) навешивает MainMenu: ей нужен IMenuUpdateService,
+        // который живёт в родительском контейнере и сюда не пробрасывается.
+        // Блок прогресса до первого клика скрыт.
+        UIState.Hide(tree.Q<VisualElement>("UpdateProgressBlock"));
 
         if (_confirmServerButton != null)
         {
@@ -247,7 +249,12 @@ public sealed class MenuModalManager
     public void OpenServerBrowser() => OpenModal(_serverBrowserModal);
     public void OpenSettings() => OpenModal(_settingsModal);
     public void OpenChronicle() => OpenModal(_chronicleModal);
-    public void OpenRepair() => OpenModal(_repairModal);
+    public void OpenRepair()
+    {
+        RepairModalOpened?.Invoke();
+        OpenModal(_repairModal);
+    }
+
     public void OpenProfile() => OpenModal(_profileModal);
     public void OpenUpdate() => OpenModal(_updateModal);
 

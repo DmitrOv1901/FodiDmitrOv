@@ -22,6 +22,7 @@ public sealed class ApplicationBootstrap : IStartable
     private readonly ILocalizationService _localization;
     private readonly IAudioSystem _audioSystem;
     private readonly IWorldEntryPreparation _worldEntryPreparation;
+    private readonly UpdateManager _updates;
 
     public ApplicationBootstrap(
         BootstrapLifetimeScope scope,
@@ -32,7 +33,8 @@ public sealed class ApplicationBootstrap : IStartable
         IShaderWarmupService shaderWarmup,
         ILocalizationService localization,
         IAudioSystem audioSystem,
-        IWorldEntryPreparation worldEntryPreparation)
+        IWorldEntryPreparation worldEntryPreparation,
+        UpdateManager updates)
     {
         _scope = scope;
         _clientConfig = clientConfig;
@@ -43,6 +45,7 @@ public sealed class ApplicationBootstrap : IStartable
         _localization = localization;
         _audioSystem = audioSystem;
         _worldEntryPreparation = worldEntryPreparation;
+        _updates = updates;
     }
 
     public void Start()
@@ -64,6 +67,16 @@ public sealed class ApplicationBootstrap : IStartable
             }
 
             _loadingScreen.Initialize();
+
+            // Авто-обновление — до любой тяжёлой инициализации: если на сервере сборка
+            // новее, скачиваем её и перезапускаемся сразу, не прогревая шейдеры зря.
+            // Сбой/отсутствие обновлений не мешает старту (UpdateManager гасит всё сам).
+            await _updates.RunIfNeededAsync(
+                config.Connection.ServerHost,
+                config.Connection.ApiPort,
+                config.Connection.UseDummyConnection,
+                _loadingScreen,
+                scopeToken);
 
             string shaderPhase = _localization.Get("bootstrap.loading.shaders");
             _loadingScreen.ShowDirect($"{shaderPhase} (0%)");

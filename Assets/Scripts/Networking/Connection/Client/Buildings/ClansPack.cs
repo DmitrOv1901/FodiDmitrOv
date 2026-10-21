@@ -8,6 +8,8 @@ public sealed class ClansPack : PackBuilding
 {
     public override BuildingType Type => BuildingType.Clans;
 
+    public override UnityEngine.Vector2 RoofCenterOffsetCells => new(0f, -0.5f);
+
     public override IEnumerable<((int X, int Y) Pos, CellType Cell)> CellsToPlace()
     {
         // Зеркало сервера (MinesServer: Game/Buildings/ClansPack.cs): стены

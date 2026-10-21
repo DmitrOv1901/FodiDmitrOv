@@ -36,6 +36,27 @@ public class DockPanelPacketBuilder : PacketUIBuilderBase<DockPanelPacket>
         PacketUIBuilder builder)
     {
         IGUIComponentPacket? filler = LastUndocked(children);
+
+        // Полностью пристыкованная панель без филлера — плоский центрированный
+        // ряд (вкладки легаси-окна приходят именно такой: все Dock=Left).
+        // Вложенные обёртки прижали бы ряд к левому краю под центрированным
+        // заголовком (репорт: вкладки сместились).
+        if (filler == null && AllDockedLeft(children))
+        {
+            var strip = new VisualElement();
+            strip.AddToClassList("row");
+            strip.AddToClassList("ai-center");
+            strip.AddToClassList("jc-center");
+            foreach (IGUIComponentPacket child in children)
+            {
+                VisualElement built = builder.Build(child);
+                built.AddToClassList("no-shrink");
+                strip.Add(built);
+            }
+
+            return strip;
+        }
+
         VisualElement current = filler != null
             ? builder.Build(filler)
             : new VisualElement();
@@ -53,6 +74,19 @@ public class DockPanelPacketBuilder : PacketUIBuilderBase<DockPanelPacket>
         }
 
         return current;
+    }
+
+    private static bool AllDockedLeft(IReadOnlyList<IGUIComponentPacket> children)
+    {
+        foreach (IGUIComponentPacket child in children)
+        {
+            if (DockOf(child) != Dock.Left)
+            {
+                return false;
+            }
+        }
+
+        return children.Count > 0;
     }
 
     private static VisualElement Wrap(VisualElement current, VisualElement child, Dock dock)

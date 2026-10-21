@@ -2,6 +2,7 @@
 
 using MinesServer.Data;
 using MinesServer.Networking.Server.Packets.GUI.Components.Visual;
+using UnityEngine;
 using UnityEngine.UIElements;
 
 namespace Kern.UI.Builders;
@@ -9,12 +10,15 @@ public class LinePacketBuilder : PacketUIBuilderBase<LinePacket>
 {
     protected override VisualElement BuildTyped(LinePacket packet, PacketUIBuilder builder)
     {
+        // Цвета в LinePacket нет: линия всегда белая (UILine рисует painter2D
+        // по LineColor). Тематический циан из packet-line-themed убран вместе
+        // с колбэком перекраски - без класса resolvedStyle.color наследовался
+        // бы от предка и зависел от окна.
         var line = new UILine
         {
             Direction = packet.Direction,
+            LineColor = Color.white,
         };
-        line.AddToClassList("packet-line-themed");
-        line.RegisterCallback<GeometryChangedEvent>(_ => line.LineColor = line.resolvedStyle.color);
 
         if (packet.Style.HasValue)
         {

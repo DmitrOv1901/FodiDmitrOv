@@ -144,6 +144,13 @@ public sealed class MenuNavigationPresenter
         _routeDescent?.AddToClassList("mm-route-item--active");
     }
 
+    /// <summary>Возврат к исходному маршруту после отмены спуска: снова активна орбита.</summary>
+    public void ResetDescentRoute()
+    {
+        _routeDescent?.RemoveFromClassList("mm-route-item--active");
+        _routeOrbit?.AddToClassList("mm-route-item--active");
+    }
+
     public void ApplyLocalization(ILocalizationService? loc)
     {
         if (loc == null)

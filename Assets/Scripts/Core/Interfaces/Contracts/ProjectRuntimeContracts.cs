@@ -41,6 +41,9 @@ public static class ProjectRuntimeContracts
         public const bool DefaultUseDummyConnection = false;
         public const string DefaultServerHost = "127.0.0.1";
         public const int DefaultServerPort = 8090;
+        // HTTP-порт API сервера (эндпоинт /api/status/online для бейджа онлайна
+        // в главном меню). Закреплён в appsettings.json сервера (Kestrel:Http).
+        public const int DefaultApiPort = 5460;
         public const bool DefaultHDREnabled = true;
     }
 
@@ -54,7 +57,43 @@ public static class ProjectRuntimeContracts
     {
         // Must stay aligned with the server's accepted ClientHello protocol
         // version. A development-only old-client path may still send 0.
+        // Это же число — версия сборки для авто-апдейтера (см. Update):
+        // манифест сервера с большим Version означает «нужен апдейт».
         public const int ClientVersion = 1;
+    }
+
+    public static class Update
+    {
+        // Канал раздачи обновлений: путь /updates/mines3/{Channel}/manifest.
+        public const string Channel = "stable";
+
+        // Публичный ключ подписи манифеста (RSA-2048, SubjectPublicKeyInfo).
+        // Сервер подписывает манифест парным приватным ключом
+        // (resources/mines-server/updates/keys/generate). Dev-пара; перед
+        // прод-раскаткой пару перегенерируют и сюда кладут новый публичный ключ
+        // (ротация = новая сборка клиента, других каналов доставки ключа нет).
+        public const string PublicKeyPem = @"-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyRgo1KK3E/rSqZIxlTu0
+uce5i/U/Fb4FiAdBCVDqpSkiOWA8WWpLP9OKJHhEXTPo2VYLqD176dKvPuXEJMtd
+qV145A+RnSYBUJJ1GfLzc2hukyiiNKdyu9wyH0jJgiXXOWBQm12W/7ubTxweHHCo
+h7thYveeQnbmVtTeldo6cCQcz8JHim7ykS1m+fuENUNvPtvnowwWdYA9KxqG851s
+gBhOL+qp2AhZomJvwnbm2dbfR+7ph6ooGnT56uIQo56l82Z/A/7wwXCdZJJN7hS2
+ZCcbUgwb8soi6pCuHnrBJdqLtG4M4B5iAzGhsM3EDbTpeDRMFCTl9SSNOO1cRzOB
+IQIDAQAB
+-----END PUBLIC KEY-----";
+
+        // Имя плеера в корне установки: его дожидается applier и его же перезапускает.
+        public const string GameExecutableName = "Kern.exe";
+
+        public const int ManifestTimeoutSeconds = 10;
+        public const int FileTimeoutSeconds = 120;
+        public const int DownloadAttempts = 3;
+        public const long MaximumManifestBytes = 1024 * 1024;
+        public const long MaximumUpdateFileBytes = 512L * 1024 * 1024;
+
+        // Запас под копирование: требуем свободного места в 1.5 раза больше
+        // суммарного размера загрузки.
+        public const long RequiredFreeSpaceFactorPercent = 150;
     }
 
     public static class Chat
@@ -76,6 +115,12 @@ public static class ProjectRuntimeContracts
         public const float RobotMoveSpeed = 15f;
         public const float RobotRotationSpeed = 1080f;
         public const float ReferenceMoveSpeed = 25f;
+
+        // Минимальный интервал между RotatePacket: поворот отправляется сразу
+        // при смене направления ввода, а этот пол лишь гасит дрожь
+        // аналогового ввода (мышь/стик) у диагонали квантования направлений,
+        // чтобы не флудить сервером пакетами туда-обратно.
+        public const float MinRotateInterval = 0.1f;
     }
 
     public static class Debug
@@ -127,7 +172,7 @@ public static class ProjectRuntimeContracts
         public const string TooltipUxml = "UI/Overlays/Tooltip";
         public const string ModalWindowUxml = "UI/Overlays/ModalWindow";
         public const string ObserverJoystickUxml = "UI/Gameplay/ObserverJoystick";
-        public const string RadialMenuUxml = "UI/Gameplay/RadialMenu";
+        public const string ProgrammatorPaletteUxml = "UI/Gameplay/ProgrammatorPalette";
         public const string PauseMenuUxml = "UI/Overlays/PauseMenu";
         public const string MinimapUxml = "UI/Gameplay/Minimap";
 
@@ -135,6 +180,7 @@ public static class ProjectRuntimeContracts
         // спрайта (spriteBorder в импортере), поэтому путь — единственное, что
         // задаётся здесь: числа границ в коде не дублируются.
         public const string LocalChatBubbleSprite = "UI/Sprites/LocalChatBubble";
+
     }
 
     public static class SceneNames
