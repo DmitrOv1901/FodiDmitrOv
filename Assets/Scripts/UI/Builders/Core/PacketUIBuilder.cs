@@ -59,9 +59,9 @@ public class PacketUIBuilder
     }
 
     /// <summary>
-    /// Разметка сервера: "UI.Id" становится именем элемента (адрес live-патчей
-    /// WindowUpdatePacket), "UI.Class" — семантическими классами, "UI.Hidden" —
-    /// display:none, "UI.Disabled" — блокировкой интерактива.
+    /// Разметка сервера: "UI.Id" становится именем элемента, "UI.Class" —
+    /// семантическими классами, "UI.Hidden" — display:none, "UI.Disabled" —
+    /// блокировкой интерактива.
     /// </summary>
     private static void ApplyServerElementProperties(VisualElement element, IGUIComponentPacket packet)
     {

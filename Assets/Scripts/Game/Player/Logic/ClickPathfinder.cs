@@ -18,8 +18,9 @@ namespace Kern.Player.Logic;
 //  - незагруженные клетки (шаг туда всё равно не провалидировать);
 //  - неломаемые буром породы: сплошные клетки без is_diggable в cells.json
 //    сервера - Черноскал, Красноскал, Гипноскал, Череп, Суперрадуга,
-//    Федеральный блок и пр. Флаг Breakable тут врёт: сервер ставит его и для
-//    is_destructible (бомба/падение), хотя буром такие клетки не взять;
+//    Федеральный блок и пр. Бит Diggable в конфиге клетки отличает их от
+//    is_destructible (бомба/падение): тот тоже несёт Breakable, но буром
+//    такие клетки не взять;
 //  - паки и строительные блоки: BuildingWall/BuildingCorner,
 //    GreenBlock/YellowBlock/RedBlock, MilitaryBlock(Frame),
 //    QuadBlock, Support - зеркала WorldCellChecks.isPackBlock/isBuildingBlock.
@@ -266,32 +267,16 @@ public static class ClickPathfinder
             return -1;
         }
 
-        // Буром берутся только is_diggable-клетки. Черноскал/Красноскал и пр.
-        // помечены сервером как Breakable (is_destructible - бомбой), но буром
-        // не копаются - явный список из cells.json.
-        if (IsUndiggable(cell))
-        {
-            return -1;
-        }
-
-        if (!mapDataProvider.GetCellConfig(cell).Properties.HasFlag(CellConfigProperties.Breakable))
+        // Буром берутся только is_diggable-клетки серверного cells.json (бит
+        // Diggable в конфиге): is_destructible-породы (Черноскал - бомбой)
+        // под ветку бурения не попадают, как и всё неломаемое.
+        if (!mapDataProvider.GetCellConfig(cell).Properties.HasFlag(CellConfigProperties.Diggable))
         {
             return -1;
         }
 
         return DigCost;
     }
-
-    // Сплошные клетки без is_diggable в cells.json сервера: бур их не берёт.
-    // Черноскал раньше назывался NiggerRock (легаси-имя),
-    // в актуальном протоколе переименован в BlackRock (114).
-    private static bool IsUndiggable(CellType cell) =>
-        cell is CellType.BlackRock          // Черноскал (114)
-            or CellType.LivingBlackRock     // Чёрная скала живородящая (115)
-            or CellType.RedRock             // Красноскал (117)
-            or CellType.HypnoRock           // Гипноскал (119)
-            or CellType.Skull               // Череп (88)
-            or CellType.SuperRainbow;       // Суперрадуга (87)
 
     // Пак-здания (зеркало WorldCellChecks.isPackBlock на сервере).
     // BuildingRoad и BuildingDoor - не блокеры, а проходимые клетки пака

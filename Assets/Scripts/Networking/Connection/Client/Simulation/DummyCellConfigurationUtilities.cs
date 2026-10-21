@@ -58,9 +58,11 @@ internal static class DummyCellConfigurationUtilities
             }
 
             // Правило сервера: ломается всё непроходимое, кроме частей пака.
+            // В офлайн-мире бур берёт всё ломаемое (своих is_destructible-пород
+            // тут нет), поэтому Diggable идёт рядом с Breakable.
             if (!def.IsPassable && def.Outline is not (CellOutline.Wall or CellOutline.Corner or CellOutline.Door))
             {
-                props |= CellConfigProperties.Breakable;
+                props |= CellConfigProperties.Breakable | CellConfigProperties.Diggable;
             }
 
             if (def.Glow > 0f)

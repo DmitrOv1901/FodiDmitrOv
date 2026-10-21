@@ -67,7 +67,6 @@ public sealed class ServerWindowPresenter : IDisposable
         _commands.OpenRequested += Open;
         _commands.CloseRequested += Close;
         _commands.ModalRequested += ShowModal;
-        _commands.ElementUpdateRequested += ApplyElementUpdate;
 
         // Первое окно не платит за разовую инициализацию движка шаблонов
         // (репорт: первое открытие маркета — 3.2 с в биндинге, далее 1 мс).
@@ -119,7 +118,6 @@ public sealed class ServerWindowPresenter : IDisposable
         _commands.OpenRequested -= Open;
         _commands.CloseRequested -= Close;
         _commands.ModalRequested -= ShowModal;
-        _commands.ElementUpdateRequested -= ApplyElementUpdate;
 
         // Оверлей тоже убирается. Панель документа переживает сцену, и оставшийся
         // элемент копился между входами в игру: новый обработчик создавал второй,
@@ -245,10 +243,9 @@ public sealed class ServerWindowPresenter : IDisposable
 
     /// <summary>
     /// Контент окна: сборка дерева из пакета, биндинг живых шаблонов,
-    /// регистрация кликабельных, крестик. Вызывается при открытии и при
-    /// живом обновлении элемента — и там, и там окно строится с нуля из
-    /// актуального дерева, так что индексы кликабельных и обработчики
-    /// остаются согласованными между собой.
+    /// регистрация кликабельных, крестик. Окно строится с нуля из дерева
+    /// пакета, так что индексы кликабельных и обработчики остаются
+    /// согласованными между собой.
     /// </summary>
     private void BuildWindowContent(WindowState state)
     {
@@ -263,92 +260,9 @@ public sealed class ServerWindowPresenter : IDisposable
     }
 
     /// <summary>
-    /// Живое обновление элемента (WindowUpdatePacket по "UI.Id"): в сохранённом
-    /// дереве пакета элемент заменяется присланным компонентом, после чего
-    /// контент окна пересобирается. Пересборка, а не точечная подмена: клик
-    /// легаси-элементов адресуется индексом в pre-order списке кликабельных,
-    /// и подмена поддерева сдвинула бы индексы у всех, кто стоит дальше.
-    /// </summary>
-    private void ApplyElementUpdate(WindowUpdatePacket packet)
-    {
-        WindowState? state = FindByTag(packet.WindowTag);
-        if (state == null)
-        {
-            Debug.LogWarning($"[PacketUI] WindowUpdate for unknown window '{packet.WindowTag}'.");
-            return;
-        }
-
-        IGUIComponentPacket? updated = ReplaceByElementId(state.Tree, packet.ElementId, packet.Component);
-        if (updated == null)
-        {
-            Debug.LogWarning($"[PacketUI] WindowUpdate: element {packet.ElementId} not found " +
-                $"in window '{packet.WindowTag}'.");
-            return;
-        }
-
-        state.Tree = updated;
-        var watch = System.Diagnostics.Stopwatch.StartNew();
-        BuildWindowContent(state);
-        Debug.Log($"[PacketUI] Окно '{state.Tag}': элемент {packet.ElementId} обновлён " +
-            $"({packet.Component.GetType().Name}), пересборка {watch.ElapsedMilliseconds} мс.");
-    }
-
-    /// <summary>
-    /// Поиск в дереве компонента с attached-свойством "UI.Id" и его замена.
-    /// Возвращает новое дерево (заменённые контейнеры клонируются through with),
-    /// null — элемента с таким id в дереве нет. Совпадение с корнем возвращает
-    /// replacement — он становится новым корнем окна.
-    /// </summary>
-    private static IGUIComponentPacket? ReplaceByElementId(
-        IGUIComponentPacket node,
-        uint elementId,
-        IGUIComponentPacket replacement)
-    {
-        string? own = AttachedProperties.Find(node, "UI.Id");
-        if (uint.TryParse(own, NumberStyles.Integer, CultureInfo.InvariantCulture, out uint parsed) &&
-            parsed == elementId)
-        {
-            return replacement;
-        }
-
-        if (node is not ContainerComponentPacket container)
-        {
-            return null;
-        }
-
-        for (int index = 0; index < container.Children.Count; index++)
-        {
-            IGUIComponentPacket? replaced = ReplaceByElementId(container.Children[index], elementId, replacement);
-            if (replaced == null)
-            {
-                continue;
-            }
-
-            var children = new List<IGUIComponentPacket>(container.Children) { [index] = replaced };
-            return container with { Children = children };
-        }
-
-        return null;
-    }
-
-    private WindowState? FindByTag(string tag)
-    {
-        for (int index = _openWindows.Count - 1; index >= 0; index--)
-        {
-            if (_openWindows[index].Tag == tag)
-            {
-                return _openWindows[index];
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// Открытое серверное окно: визуальное дерево, биндинг и данные, по которым
-    /// живут клики и обновления. Tree — обработанное дерево пакета (после
-    /// ExpandSerializedRows/PromoteTabStrip): из него контент пересобирается
-    /// при WindowUpdatePacket.
+    /// живут клики. Tree — обработанное дерево пакета (после
+    /// ExpandSerializedRows/PromoteTabStrip), из него строится контент окна.
     /// </summary>
     private sealed class WindowState
     {

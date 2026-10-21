@@ -449,9 +449,6 @@ namespace Kern.Core
             RegisterAuthored(builder, _textureStorageManager, nameof(_textureStorageManager));
             RegisterAuthored(builder, _loadingScreen, nameof(_loadingScreen));
             builder.Register<LocalizationService>(Lifetime.Singleton).AsImplementedInterfaces().AsSelf();
-            builder.Register<UpdateManager>(Lifetime.Singleton);
-            // Статус версии для главного меню (баннер «Требуется обновление» и модал).
-            builder.Register<MenuUpdateService>(Lifetime.Singleton).As<IMenuUpdateService>();
             // Проверки целостности файлов для окна «Диагностика и целостность файлов».
             builder.Register<MenuFileDiagnosticsService>(Lifetime.Singleton).As<IMenuFileDiagnosticsService>();
             builder.RegisterEntryPoint<HDROutputReconciler>();

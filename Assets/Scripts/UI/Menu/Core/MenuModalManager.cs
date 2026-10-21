@@ -20,7 +20,6 @@ public sealed class MenuModalManager
     private VisualElement? _chronicleModal;
     private VisualElement? _repairModal;
     private VisualElement? _profileModal;
-    private VisualElement? _updateModal;
     private VisualElement? _activeModal;
 
     private Button? _settingsTabGraphics;
@@ -56,7 +55,6 @@ public sealed class MenuModalManager
         _chronicleModal = tree.Q<VisualElement>("ChronicleModal");
         _repairModal = tree.Q<VisualElement>("RepairModal");
         _profileModal = tree.Q<VisualElement>("ProfileModal");
-        _updateModal = tree.Q<VisualElement>("UpdateModal");
 
         _settingsTabGraphics = tree.Q<Button>("SettingsTabGraphics");
         _settingsTabAudio = tree.Q<Button>("SettingsTabAudio");
@@ -90,7 +88,6 @@ public sealed class MenuModalManager
         BindModalClose(tree, "ConfirmRepairButton");
         BindModalClose(tree, "CloseProfileModalButton");
         BindModalClose(tree, "CloseProfileFooterButton");
-        BindModalClose(tree, "CloseUpdateModalButton");
 
         if (_settingsTabGraphics != null)
         {
@@ -204,24 +201,6 @@ public sealed class MenuModalManager
             };
         }
 
-        // Update Modal Logic
-        var deferOfflineBtn = tree.Q<Button>("DeferUpdateOfflineButton");
-        if (deferOfflineBtn != null)
-        {
-            deferOfflineBtn.clicked += () =>
-            {
-                clientConfig?.UpdateAndSave(cfg => cfg.Connection.UseDummyConnection = true);
-                CloseCurrentModal();
-                onPlay();
-            };
-        }
-
-        // Реальное поведение кнопки подтверждения обновления (скачивание с
-        // прогрессом и перезапуск) навешивает MainMenu: ей нужен IMenuUpdateService,
-        // который живёт в родительском контейнере и сюда не пробрасывается.
-        // Блок прогресса до первого клика скрыт.
-        UIState.Hide(tree.Q<VisualElement>("UpdateProgressBlock"));
-
         if (_confirmServerButton != null)
         {
             _confirmServerButton.clicked += () =>
@@ -256,7 +235,6 @@ public sealed class MenuModalManager
     }
 
     public void OpenProfile() => OpenModal(_profileModal);
-    public void OpenUpdate() => OpenModal(_updateModal);
 
     public void OpenModal(VisualElement? modal)
     {
@@ -285,7 +263,6 @@ public sealed class MenuModalManager
         UIState.Hide(_chronicleModal);
         UIState.Hide(_repairModal);
         UIState.Hide(_profileModal);
-        UIState.Hide(_updateModal);
     }
 
     private void BindModalClose(VisualElement tree, string buttonName)

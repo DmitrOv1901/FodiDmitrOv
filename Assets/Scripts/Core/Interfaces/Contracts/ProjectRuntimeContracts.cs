@@ -57,43 +57,9 @@ public static class ProjectRuntimeContracts
     {
         // Must stay aligned with the server's accepted ClientHello protocol
         // version. A development-only old-client path may still send 0.
-        // Это же число — версия сборки для авто-апдейтера (см. Update):
-        // манифест сервера с большим Version означает «нужен апдейт».
+        // Эту же версию сервер сверяет с MinimumClientVersion: устаревшему
+        // клиенту приходит OutdatedClientPacket со ссылкой на скачивание.
         public const int ClientVersion = 1;
-    }
-
-    public static class Update
-    {
-        // Канал раздачи обновлений: путь /updates/mines3/{Channel}/manifest.
-        public const string Channel = "stable";
-
-        // Публичный ключ подписи манифеста (RSA-2048, SubjectPublicKeyInfo).
-        // Сервер подписывает манифест парным приватным ключом
-        // (resources/mines-server/updates/keys/generate). Dev-пара; перед
-        // прод-раскаткой пару перегенерируют и сюда кладут новый публичный ключ
-        // (ротация = новая сборка клиента, других каналов доставки ключа нет).
-        public const string PublicKeyPem = @"-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyRgo1KK3E/rSqZIxlTu0
-uce5i/U/Fb4FiAdBCVDqpSkiOWA8WWpLP9OKJHhEXTPo2VYLqD176dKvPuXEJMtd
-qV145A+RnSYBUJJ1GfLzc2hukyiiNKdyu9wyH0jJgiXXOWBQm12W/7ubTxweHHCo
-h7thYveeQnbmVtTeldo6cCQcz8JHim7ykS1m+fuENUNvPtvnowwWdYA9KxqG851s
-gBhOL+qp2AhZomJvwnbm2dbfR+7ph6ooGnT56uIQo56l82Z/A/7wwXCdZJJN7hS2
-ZCcbUgwb8soi6pCuHnrBJdqLtG4M4B5iAzGhsM3EDbTpeDRMFCTl9SSNOO1cRzOB
-IQIDAQAB
------END PUBLIC KEY-----";
-
-        // Имя плеера в корне установки: его дожидается applier и его же перезапускает.
-        public const string GameExecutableName = "Kern.exe";
-
-        public const int ManifestTimeoutSeconds = 10;
-        public const int FileTimeoutSeconds = 120;
-        public const int DownloadAttempts = 3;
-        public const long MaximumManifestBytes = 1024 * 1024;
-        public const long MaximumUpdateFileBytes = 512L * 1024 * 1024;
-
-        // Запас под копирование: требуем свободного места в 1.5 раза больше
-        // суммарного размера загрузки.
-        public const long RequiredFreeSpaceFactorPercent = 150;
     }
 
     public static class Chat

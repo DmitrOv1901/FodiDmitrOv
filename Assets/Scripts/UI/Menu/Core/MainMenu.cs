@@ -70,36 +70,6 @@ namespace Kern.UI
         private bool _profileRequestInFlight;
         private bool _profileFailureLogged;
 
-        // Живой статус обновления (баннер «Требуется обновление» и модал):
-        // IMenuUpdateService спрашивает подписанный манифест сервера и сравнивает
-        // с версией сборки. Обновляется при постройке меню и далее раз в 30 секунд,
-        // пока меню на экране; клик по «Обновить» запускает реальную загрузку.
-        private const float UpdateStatusRefreshIntervalSeconds = 30f;
-        private const string UpdateBannerIdleClass = "mm-update-banner--idle";
-        private const string SideUpdateGoldClass = "mm-side-btn--gold";
-        private Button? _updateBanner;
-        private Button? _sideUpdateButton;
-        private VisualElement? _sideUpdateBadge;
-        private Label? _updateBannerTitle;
-        private Label? _updateBannerSub;
-        private Label? _updateBannerCta;
-        private Label? _updateModalTitle;
-        private Label? _updateModalDesc;
-        private Label? _updateHeroTitle;
-        private Label? _updateNotesText;
-        private VisualElement? _updateHeroBox;
-        private VisualElement? _updateChangelogBlock;
-        private VisualElement? _updateProgressBlock;
-        private VisualElement? _updateProgressFill;
-        private Label? _updateProgressPercent;
-        private Label? _updateProgressStatus;
-        private Button? _confirmUpdateButton;
-        private Button? _deferUpdateOfflineButton;
-        private MenuUpdateStatus? _lastUpdateStatus;
-        private float _updateStatusRefreshTimer;
-        private bool _updateStatusRequestInFlight;
-        private bool _updateApplyInFlight;
-
         // Живая проверка файлов в окне «Диагностика и целостность файлов»: при
         // открытии запускает IMenuFileDiagnosticsService, рисует статус каждой
         // проверки и общий прогресс; «Перепроверить кэш» прогоняет заново.
@@ -125,8 +95,6 @@ namespace Kern.UI
         private IClientConfigManager _clientConfig = null!;
         [Inject]
         private IAsyncOperationSupervisor _operations = null!;
-        [Inject]
-        private IMenuUpdateService _menuUpdates = null!;
         [Inject]
         private IMenuFileDiagnosticsService _fileDiagnostics = null!;
         [Inject]
@@ -323,24 +291,6 @@ namespace Kern.UI
             _serverDetailDepth = tree.Q<Label>("ServerDetailDepth");
             _serverDetailPing = tree.Q<Label>("ServerDetailPing");
 
-            _updateBanner = tree.Q<Button>("UpdateAlertBanner");
-            _sideUpdateButton = tree.Q<Button>("SideUpdateButton");
-            _sideUpdateBadge = _sideUpdateButton?.Q(className: "mm-side-badge");
-            _updateBannerTitle = tree.Q<Label>("UpdateBannerTitle");
-            _updateBannerSub = tree.Q<Label>("UpdateBannerSub");
-            _updateBannerCta = tree.Q<Label>("UpdateBannerCta");
-            _updateModalTitle = tree.Q<Label>("UpdateModalTitle");
-            _updateModalDesc = tree.Q<Label>("UpdateModalDesc");
-            _updateHeroBox = tree.Q<VisualElement>("UpdateHeroBox");
-            _updateHeroTitle = tree.Q<Label>("UpdateHeroTitle");
-            _updateChangelogBlock = tree.Q<VisualElement>("UpdateChangelogBlock");
-            _updateNotesText = tree.Q<Label>("UpdateNotesText");
-            _updateProgressBlock = tree.Q<VisualElement>("UpdateProgressBlock");
-            _updateProgressFill = tree.Q<VisualElement>("UpdateProgressFill");
-            _updateProgressPercent = tree.Q<Label>("UpdateProgressPercent");
-            _updateProgressStatus = tree.Q<Label>("UpdateProgressStatus");
-            _confirmUpdateButton = tree.Q<Button>("ConfirmUpdateButton");
-            _deferUpdateOfflineButton = tree.Q<Button>("DeferUpdateOfflineButton");
             _repairProgressBlock = tree.Q<VisualElement>("RepairProgressBlock");
             _repairProgressFill = tree.Q<VisualElement>("RepairProgressFill");
             _repairProgressPercent = tree.Q<Label>("RepairProgressPercent");
@@ -356,11 +306,6 @@ namespace Kern.UI
                 _loc);
 
             _loaderPanel.Reset();
-
-            // Первичная проверка версии — сразу после постройки меню.
-            _updateStatusRefreshTimer = 0f;
-            _lastUpdateStatus = null;
-            RefreshUpdateStatusAsync(destroyCancellationToken).Forget();
         }
 
         protected void Update()
@@ -405,177 +350,10 @@ namespace Kern.UI
             _sceneryPresenter.Tick(ref _spaceBgTexture);
             MenuKeyboardHandler.HandleInput(_modalManager, _loadingActive, OnPlayButtonClicked, CancelDescent);
 
-            TickOnlineBadge();
-            TickUpdateStatus();
         }
 
-        private void TickUpdateStatus()
-        {
-            if (_updateBannerTitle == null || _loadingActive)
-            {
-                return;
-            }
 
-            _updateStatusRefreshTimer -= Time.deltaTime;
-            if (_updateStatusRefreshTimer > 0f || _updateStatusRequestInFlight || _updateApplyInFlight)
-            {
-                return;
-            }
 
-            _updateStatusRefreshTimer = UpdateStatusRefreshIntervalSeconds;
-            RefreshUpdateStatusAsync(destroyCancellationToken).Forget();
-        }
-
-        private async UniTaskVoid RefreshUpdateStatusAsync(CancellationToken cancellationToken)
-        {
-            _updateStatusRequestInFlight = true;
-            try
-            {
-                MenuUpdateStatus status = await _menuUpdates.GetStatusAsync(cancellationToken);
-                if (_teardownStarted)
-                {
-                    return;
-                }
-
-                _lastUpdateStatus = status;
-                ApplyUpdateStatusTexts();
-            }
-            catch (OperationCanceledException)
-            {
-                // Меню закрывается — тихо выходим.
-            }
-            catch (Exception exception)
-            {
-                Debug.LogWarning($"[MainMenu] Update status check failed: {exception.Message}");
-            }
-            finally
-            {
-                _updateStatusRequestInFlight = false;
-            }
-        }
-
-        /// <summary>Раскладывает последний статус по баннеру и модалу обновления.</summary>
-        private void ApplyUpdateStatusTexts()
-        {
-            if (_loc == null)
-            {
-                return;
-            }
-
-            MenuUpdateStatus status = _lastUpdateStatus ?? new MenuUpdateStatus(
-                MenuUpdateKind.Unavailable, 0, string.Empty,
-                ProjectRuntimeContracts.Networking.ClientVersion,
-                $"0.0.{ProjectRuntimeContracts.Networking.ClientVersion}",
-                string.Empty);
-
-            switch (status.Kind)
-            {
-                case MenuUpdateKind.UpdateAvailable:
-                    if (_updateBannerTitle != null)
-                    {
-                        _updateBannerTitle.text = _loc.Get("mainmenu.update_banner_title_required", status.ServerVersionName);
-                    }
-                    if (_updateBannerSub != null)
-                    {
-                        _updateBannerSub.text = _loc.Get("mainmenu.update_banner_sub");
-                    }
-                    if (_updateModalTitle != null)
-                    {
-                        _updateModalTitle.text = _loc.Get("mainmenu.update_modal_title_required", status.ServerVersionName);
-                    }
-                    if (_updateModalDesc != null)
-                    {
-                        _updateModalDesc.text = _loc.Get(
-                            "mainmenu.update_modal_desc_required", status.ServerVersionName, status.LocalVersionName);
-                    }
-                    break;
-                case MenuUpdateKind.Unavailable:
-                    if (_updateBannerTitle != null)
-                    {
-                        _updateBannerTitle.text = _loc.Get("mainmenu.update_banner_title_unknown");
-                    }
-                    if (_updateBannerSub != null)
-                    {
-                        _updateBannerSub.text = _loc.Get("mainmenu.update_banner_sub_unknown");
-                    }
-                    if (_updateModalTitle != null)
-                    {
-                        _updateModalTitle.text = _loc.Get("mainmenu.update_modal_title_unknown");
-                    }
-                    if (_updateModalDesc != null)
-                    {
-                        _updateModalDesc.text = _loc.Get("mainmenu.update_modal_desc_unknown");
-                    }
-                    break;
-                default:
-                    if (_updateBannerTitle != null)
-                    {
-                        _updateBannerTitle.text = _loc.Get("mainmenu.update_banner_title_uptodate");
-                    }
-                    if (_updateBannerSub != null)
-                    {
-                        _updateBannerSub.text = _loc.Get("mainmenu.update_banner_sub_uptodate", status.LocalVersionName);
-                    }
-                    if (_updateModalTitle != null)
-                    {
-                        _updateModalTitle.text = _loc.Get("mainmenu.update_modal_title_uptodate");
-                    }
-                    if (_updateModalDesc != null)
-                    {
-                        _updateModalDesc.text = _loc.Get("mainmenu.update_modal_desc_uptodate", status.LocalVersionName);
-                    }
-                    break;
-            }
-
-            bool required = status.Kind == MenuUpdateKind.UpdateAvailable;
-
-            // Баннер: с кнопкой «ОБНОВИТЬ» и текстом слева, когда обновление требуется;
-            // без кнопки и с текстом по центру — когда нет. Сама кнопка-баннер
-            // кликабельна всегда и открывает окно обновления.
-            _updateBanner?.EnableInClassList(UpdateBannerIdleClass, !required);
-
-            // Кнопка в боковом рейле: золото с красной точкой только когда обновление
-            // реально требуется, иначе выглядит как соседние кнопки рейла.
-            _sideUpdateButton?.EnableInClassList(SideUpdateGoldClass, required);
-            UIState.SetHidden(_sideUpdateBadge, !required);
-            if (_updateBannerCta != null)
-            {
-                UIState.SetHidden(_updateBannerCta, !required);
-            }
-
-            if (_updateHeroBox != null)
-            {
-                UIState.SetHidden(_updateHeroBox, !required);
-            }
-            if (_updateHeroTitle != null)
-            {
-                _updateHeroTitle.text = required ? $"v{status.ServerVersionName}" : string.Empty;
-            }
-            if (_updateChangelogBlock != null)
-            {
-                bool hasNotes = required && !string.IsNullOrWhiteSpace(status.Notes);
-                UIState.SetHidden(_updateChangelogBlock, !hasNotes);
-            }
-            if (_updateNotesText != null)
-            {
-                _updateNotesText.text = status.Notes ?? string.Empty;
-            }
-            if (_confirmUpdateButton != null)
-            {
-                _confirmUpdateButton.text = required
-                    ? _loc.Get("mainmenu.update_confirm")
-                    : _loc.Get("mainmenu.update_uptodate_close");
-            }
-            if (_deferUpdateOfflineButton != null && !required && !_updateApplyInFlight)
-            {
-                // «Играть офлайн» имеет смысл только когда обновление действительно требуется.
-                UIState.SetHidden(_deferUpdateOfflineButton, true);
-            }
-            else if (_deferUpdateOfflineButton != null && required && !_updateApplyInFlight)
-            {
-                UIState.SetHidden(_deferUpdateOfflineButton, false);
-            }
-        }
 
         // ── Окно «Диагностика и целостность файлов» ──
 
@@ -854,104 +632,7 @@ namespace Kern.UI
             line.AddToClassList(modifierClass);
         }
 
-        private void OnConfirmUpdateClicked()
-        {
-            if (_updateApplyInFlight)
-            {
-                return;
-            }
 
-            if (_lastUpdateStatus is not { Kind: MenuUpdateKind.UpdateAvailable })
-            {
-                // Обновлять нечего — кнопка «Продолжить» просто закрывает окно.
-                _modalManager.CloseCurrentModal();
-                return;
-            }
-
-            ApplyUpdateAsync().Forget();
-        }
-
-        private async UniTaskVoid ApplyUpdateAsync()
-        {
-            _updateApplyInFlight = true;
-            if (_confirmUpdateButton != null)
-            {
-                _confirmUpdateButton.SetEnabled(false);
-            }
-            if (_deferUpdateOfflineButton != null)
-            {
-                _deferUpdateOfflineButton.SetEnabled(false);
-            }
-            if (_updateProgressBlock != null)
-            {
-                UIState.Show(_updateProgressBlock);
-            }
-
-            try
-            {
-                bool restarting = await _menuUpdates.ApplyUpdateAsync(
-                    phase =>
-                    {
-                        if (_updateProgressStatus != null && _loc != null)
-                        {
-                            _updateProgressStatus.text = phase;
-                        }
-                    },
-                    fraction =>
-                    {
-                        if (_updateProgressFill != null)
-                        {
-                            _updateProgressFill.style.width = new Length(
-                                Mathf.Clamp01(fraction) * 100f, LengthUnit.Percent);
-                        }
-                        if (_updateProgressPercent != null)
-                        {
-                            _updateProgressPercent.text = $"{Mathf.RoundToInt(Mathf.Clamp01(fraction) * 100f)}%";
-                        }
-                    },
-                    destroyCancellationToken);
-
-                if (!restarting)
-                {
-                    // Не перезапускаемся: вернуть кнопки и показать причину в строке статуса.
-                    if (_updateProgressStatus != null && _loc != null)
-                    {
-                        _updateProgressStatus.text = _loc.Get("mainmenu.update_failed");
-                    }
-                    if (_confirmUpdateButton != null)
-                    {
-                        _confirmUpdateButton.SetEnabled(true);
-                    }
-                    if (_deferUpdateOfflineButton != null)
-                    {
-                        _deferUpdateOfflineButton.SetEnabled(true);
-                    }
-                    _updateApplyInFlight = false;
-                }
-                // restarting == true: applier уже завершил процесс, дальше ничего не исполняется.
-            }
-            catch (OperationCanceledException)
-            {
-                _updateApplyInFlight = false;
-            }
-            catch (Exception exception)
-            {
-                Debug.LogError($"[MainMenu] Update apply failed: {exception}");
-                if (_updateProgressStatus != null && _loc != null)
-                {
-                    _updateProgressStatus.text = _loc.Get("mainmenu.update_failed");
-                }
-                if (_confirmUpdateButton != null)
-                {
-                    _confirmUpdateButton.SetEnabled(true);
-                }
-                if (_deferUpdateOfflineButton != null)
-                {
-                    _deferUpdateOfflineButton.SetEnabled(true);
-                }
-                _updateApplyInFlight = false;
-            }
-        }
 
         private void TickOnlineBadge()
         {
@@ -1144,11 +825,6 @@ namespace Kern.UI
                     _operations,
                     _loc);
 
-                if (_confirmUpdateButton != null)
-                {
-                    _confirmUpdateButton.clicked += OnConfirmUpdateClicked;
-                }
-
                 if (_runFullRepairButton != null)
                 {
                     _runFullRepairButton.clicked += OnRunFullDiagnosticsClicked;
@@ -1176,7 +852,6 @@ namespace Kern.UI
             _navigationPresenter.ApplyLocalization(_loc);
             _loaderPanel.RefreshLocalization();
             // UILocalizer.Apply сбрасывает тексты на ключи разметки — возвращаем живые.
-            ApplyUpdateStatusTexts();
             ApplyRepairTexts();
             ApplyPlayerIdentity();
             UILocalizer.AssertLocalized(_tree, _loc);

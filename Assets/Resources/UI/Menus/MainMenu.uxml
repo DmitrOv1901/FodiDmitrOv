@@ -88,18 +88,6 @@
             </ui:VisualElement>
             <ui:Label class="mm-subtitle" text="mainmenu.tagline" />
 
-            <!-- Баннер обновления. Тексты ставит MainMenu.ApplyUpdateStatusTexts
-                 по живой проверке манифеста сервера (IMenuUpdateService): требуется /
-                 не требуется / не проверено. Ключ в разметке — нейтральный дефолт
-                 до первой проверки. -->
-            <ui:Button name="UpdateAlertBanner" class="mm-update-banner">
-                <ui:VisualElement class="mm-update-banner-text">
-                    <ui:Label name="UpdateBannerTitle" class="mm-update-banner-title" text="mainmenu.update_banner_title_unknown" />
-                    <ui:Label name="UpdateBannerSub" class="mm-update-banner-sub" text="mainmenu.update_banner_sub_unknown" />
-                </ui:VisualElement>
-                <ui:Label name="UpdateBannerCta" class="mm-update-banner-cta" text="mainmenu.update_banner_cta" />
-            </ui:Button>
-
             <!-- Основные кнопки -->
             <ui:VisualElement class="mm-button-group">
                 <ui:Button name="PlayButton" class="mm-btn-primary">
@@ -136,11 +124,6 @@
             <ui:Button name="SideRepairButton" class="mm-side-btn" tooltip="mainmenu.tooltip.repair">
                 <ui:VisualElement name="SideRepairIcon" class="mm-side-icon" />
             </ui:Button>
-            <ui:Button name="SideUpdateButton" class="mm-side-btn" tooltip="mainmenu.tooltip.update">
-                <ui:VisualElement name="SideUpdateIcon" class="mm-side-icon" />
-                <ui:VisualElement class="mm-side-badge is-hidden" />
-            </ui:Button>
-
             <ui:VisualElement class="mm-sidebar-sep" />
 
             <ui:Button name="SideDiscordButton" class="mm-side-btn" tooltip="mainmenu.tooltip.discord">
@@ -499,41 +482,6 @@
                 </ui:VisualElement>
             </ui:VisualElement>
 
-            <!-- 6. Патч / Обновление -->
-            <ui:VisualElement name="UpdateModal" class="is-hidden mm-modal-card">
-                <ui:VisualElement class="mm-modal-header">
-                    <ui:Label name="UpdateModalTitle" class="mm-modal-title" text="mainmenu.update_modal_title_unknown" />
-                    <ui:Button name="CloseUpdateModalButton" class="mm-modal-close" text="✕" />
-                </ui:VisualElement>
-                <ui:VisualElement class="mm-modal-body">
-                    <ui:Label name="UpdateModalDesc" class="mm-modal-desc" text="mainmenu.update_modal_desc_unknown" />
-                    <ui:VisualElement name="UpdateHeroBox" class="mm-card-box mm-update-hero-box">
-                        <ui:Label name="UpdateHeroTitle" class="mm-item-title mm-text--gold mm-update-title" />
-                    </ui:VisualElement>
-
-                    <ui:VisualElement name="UpdateChangelogBlock" class="mm-card-box">
-                        <ui:Label class="mm-card-tag" text="mainmenu.update_changelog" />
-                        <ui:VisualElement class="mm-row-item">
-                            <ui:Label name="UpdateNotesText" class="mm-item-title" />
-                        </ui:VisualElement>
-                    </ui:VisualElement>
-
-                    <!-- Блок симуляции скачивания -->
-                    <ui:VisualElement name="UpdateProgressBlock" class="is-hidden mm-card-box mm-card-box--gap-top">
-                        <ui:VisualElement class="mm-loader-progress-track">
-                            <ui:VisualElement name="UpdateProgressFill" class="mm-loader-progress-fill mm-progress-fill--init" />
-                        </ui:VisualElement>
-                        <ui:VisualElement class="mm-row-item mm-row-item--meta">
-                            <ui:Label name="UpdateProgressStatus" class="mm-card-tag" text="mainmenu.update_downloading" />
-                            <ui:Label name="UpdateProgressPercent" class="mm-item-val mm-text--gold" text="0%" />
-                        </ui:VisualElement>
-                    </ui:VisualElement>
-                </ui:VisualElement>
-                <ui:VisualElement class="mm-modal-footer mm-footer--between">
-                    <ui:Button name="DeferUpdateOfflineButton" class="mm-btn-outline fit-atomic" text="mainmenu.update_offline" />
-                    <ui:Button name="ConfirmUpdateButton" class="mm-btn-gold fit-wrap" text="mainmenu.update_confirm" />
-                </ui:VisualElement>
-            </ui:VisualElement>
         </ui:VisualElement>
     </ui:VisualElement>
 </ui:UXML>
